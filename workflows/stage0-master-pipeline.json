@@ -479,7 +479,7 @@
         560
       ],
       "parameters": {
-        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\n\nlet qa = null;\nlet parseError = null;\ntry {\n  qa = JSON.parse(raw);\n} catch (e) {\n  parseError = e.message;\n}\n\nconst prep = $('Prepare QA Prompt').item.json;\n\nreturn [{\n  json: {\n    qa,\n    _qaParseOk: qa !== null,\n    _qaParseError: parseError,\n    review: prep.review,\n    research: prep.research,\n    qa_min_confidence: prep.qa_min_confidence,\n    _qaRetryCount: prep._qaRetryCount || 0\n  }\n}];"
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\n\nlet qa = null;\nlet parseError = null;\ntry {\n  qa = JSON.parse(raw);\n} catch (e) {\n  parseError = e.message;\n}\n\nconst prep = $('Prepare QA Prompt').item.json;\n\nreturn [{\n  json: {\n    qa,\n    _qaParseOk: qa !== null,\n    _qaParseError: parseError,\n    review: prep.review,\n    research: prep.research,\n    qa_min_confidence: prep.qa_min_confidence,\n    ollama_base_url: prep.ollama_base_url,\n    qa_model: prep.qa_model,\n    writer_model: $('Parse Writer JSON').item.json.writer_model,\n    _qaRetryCount: prep._qaRetryCount || 0\n  }\n}];"
       }
     },
     {

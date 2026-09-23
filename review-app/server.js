@@ -158,4 +158,8 @@ app.use((err, req, res, next) => {
   res.status(500).send(layout('Error', `<pre>${esc(err.message)}</pre>`));
 });
 
-app.listen(PORT, () => console.log(`Review app listening on :${PORT}`));
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`Review app listening on :${PORT}`));
+}
+
+module.exports = app;
