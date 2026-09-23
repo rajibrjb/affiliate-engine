@@ -1,0 +1,570 @@
+{
+  "id": "stage1reviewwriter01",
+  "name": "Stage 1 - Review Writer (Ollama)",
+  "nodes": [
+    {
+      "id": "sticky-1",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -260
+      ],
+      "parameters": {
+        "content": "## Stage 1: Deterministic Review Writer\n\nManually-pasted fake research -> Ollama Writer -> validation -> Ollama QA -> Save. (Node labels still say \"Ollama\" - they now call the DeepSeek API, renaming risked breaking name-based node references so it was left as a known cosmetic inconsistency.)\n\n- Edit the model/API base URL in the **Config** node.\n- Edit fake product/facts/findings/sentiment in **Product + Evidence**.\n- \"Save Review\" is a placeholder terminal node - wiring it to WordPress is Stage 4.\n- Requires a DeepSeek API key (DEEP_SEEK_API_KEY env var passed to the n8n container). Model: deepseek-flash.\n\n**Structure enforced (2026-09-19):** every review must open with a complete Specifications section covering every supplied fact (no cherry-picking), and must close with an owner_consensus that blends every supplied owner-sentiment item (positive, negative and mixed) into one paragraph. Enforced twice: deterministically in **Validate Review** (checks every fact id / sentiment id is cited) and again by the **Ollama QA** pass (specifications_complete / owner_consensus_complete booleans, checked in **IF QA Passed?**).",
+        "height": 260,
+        "width": 380
+      }
+    },
+    {
+      "id": "trigger-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        60
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "config-1",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -220,
+        60
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "ollama_base_url",
+              "type": "string",
+              "value": "https://api.deepseek.com/v1"
+            },
+            {
+              "id": "c2",
+              "name": "writer_model",
+              "type": "string",
+              "value": "deepseek-flash"
+            },
+            {
+              "id": "c3",
+              "name": "qa_model",
+              "type": "string",
+              "value": "deepseek-flash"
+            },
+            {
+              "id": "c4",
+              "name": "qa_min_confidence",
+              "type": "number",
+              "value": 0.85
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "evidence-1",
+      "name": "Product + Evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const product = {\n  name: \"Weber Q2600N+\",\n  brand: \"Weber\",\n  category: \"Portable Gas Grill (LPG)\",\n  model: \"Q2600N+\",\n  part_number: \"28510024\"\n};\n\nconst facts = [\n  { id: \"FACT-001\", claim: \"Main burner rated at 19 MJ (18,000 BTU), plus a supplementary '+' burner rated at 4.2 MJ (4,000 BTU)\", source: \"Weber Australia official product page\", source_url: \"https://anz.weber.com/en-au/products/weber-q-q2600n-plus-lpg-gas-bbq-midnight-black\", type: \"manufacturer_claim\" },\n  { id: \"FACT-002\", claim: \"Primary cooking area of 2,064 sq cm (57cm x 41cm), with capacity for approximately 12 burgers at once\", source: \"Weber Australia official product page\", source_url: \"https://anz.weber.com/en-au/products/weber-q-q2600n-plus-lpg-gas-bbq-midnight-black\", type: \"manufacturer_claim\" },\n  { id: \"FACT-003\", claim: \"Porcelain-enamelled cast iron cooking grates\", source: \"Weber Australia official product page\", source_url: \"https://anz.weber.com/en-au/products/weber-q-q2600n-plus-lpg-gas-bbq-midnight-black\", type: \"manufacturer_claim\" },\n  { id: \"FACT-004\", claim: \"Piezo push-button ignition, removable side tables, and a front-facing grease/catch tray\", source: \"Weber Australia official product page\", source_url: \"https://anz.weber.com/en-au/products/weber-q-q2600n-plus-lpg-gas-bbq-midnight-black\", type: \"manufacturer_claim\" },\n  { id: \"FACT-005\", claim: \"Compatible with the optional Weber Connect smart grilling hub\", source: \"Weber Australia official product page\", source_url: \"https://anz.weber.com/en-au/products/weber-q-q2600n-plus-lpg-gas-bbq-midnight-black\", type: \"manufacturer_claim\" },\n  { id: \"FACT-006\", claim: \"Listed at $589 AUD (part number 28510024), with an extended warranty of up to 15 years available on registration\", source: \"Weber Australia official product page\", source_url: \"https://anz.weber.com/en-au/products/weber-q-q2600n-plus-lpg-gas-bbq-midnight-black\", type: \"manufacturer_claim\" }\n];\n\nconst expert_findings = [\n  { id: \"EXP-010\", finding: \"The dual-burner setup (18,000 BTU main + 4,000 BTU Plus burner) delivered consistent temperatures across the cooking surface, reaching about 750F and searing steaks to medium-rare in 6-7 minutes\", source: \"Smoked BBQ Source independent review of the Weber Q2800N+ (the larger sibling model on the same G3 platform, not the exact Q2600N+ unit)\", source_url: \"https://www.smokedbbqsource.com/weber-q-2800n-plus-gas-grill-review/\", type: \"independent_test\" },\n  { id: \"EXP-011\", finding: \"Despite weighing under 40 lbs, the grill was described as very sturdy for such a lightweight, compact, portable grill, with the porcelain-enamelled cast-iron grates giving even heat distribution and retention\", source: \"Smoked BBQ Source independent review of the Weber Q2800N+ (same G3 platform sibling, not the exact Q2600N+ unit)\", source_url: \"https://www.smokedbbqsource.com/weber-q-2800n-plus-gas-grill-review/\", type: \"independent_test\" },\n  { id: \"EXP-012\", finding: \"The front-facing removable catch pan and compact footprint made cleanup simple, with deep cleaning only requiring occasional grate removal\", source: \"Smoked BBQ Source independent review of the Weber Q2800N+ (same G3 platform sibling, not the exact Q2600N+ unit)\", source_url: \"https://www.smokedbbqsource.com/weber-q-2800n-plus-gas-grill-review/\", type: \"independent_test\" },\n  { id: \"EXP-013\", finding: \"The reviewer's main criticism was that pricing is similar to a full-sized Weber Spirit grill, questioning the value for a smaller unit\", source: \"Smoked BBQ Source independent review of the Weber Q2800N+ (same G3 platform sibling, not the exact Q2600N+ unit)\", source_url: \"https://www.smokedbbqsource.com/weber-q-2800n-plus-gas-grill-review/\", type: \"independent_test\" }\n];\n\nconst owner_sentiment = [\n  { id: \"SENT-001\", topic: \"overall_rating\", sentiment: \"positive\", evidence_count: 25, detail: \"4.7 out of 5 stars across 25 reviews, 96% of reviewers recommend the product\", source: \"The Good Guys (AU retailer) customer reviews\", source_url: \"https://www.thegoodguys.com.au/weber-q-2600n-plus-lp-midnight-black-28510024\" },\n  { id: \"SENT-002\", topic: \"portability\", sentiment: \"positive\", evidence_count: 25, detail: \"Customers praise its lightweight, compact design for camping and small patios\", source: \"The Good Guys (AU retailer) customer reviews\", source_url: \"https://www.thegoodguys.com.au/weber-q-2600n-plus-lp-midnight-black-28510024\" },\n  { id: \"SENT-003\", topic: \"ease_of_cleaning\", sentiment: \"positive\", evidence_count: 25, detail: \"Push-button ignition and removable drip tray receive consistent praise\", source: \"The Good Guys (AU retailer) customer reviews\", source_url: \"https://www.thegoodguys.com.au/weber-q-2600n-plus-lp-midnight-black-28510024\" },\n  { id: \"SENT-004\", topic: \"price\", sentiment: \"negative\", evidence_count: 25, detail: \"Some customers find it expensive relative to alternatives\", source: \"The Good Guys (AU retailer) customer reviews\", source_url: \"https://www.thegoodguys.com.au/weber-q-2600n-plus-lp-midnight-black-28510024\" },\n  { id: \"SENT-005\", topic: \"assembly_documentation\", sentiment: \"negative\", evidence_count: 25, detail: \"Limited assembly documentation noted; some users recommend checking online guides instead\", source: \"The Good Guys (AU retailer) customer reviews\", source_url: \"https://www.thegoodguys.com.au/weber-q-2600n-plus-lp-midnight-black-28510024\" },\n  { id: \"SENT-006\", topic: \"cooking_capacity\", sentiment: \"mixed\", evidence_count: 25, detail: \"Not considered ideal for very large gatherings; seen as better suited to groups up to about 8 people\", source: \"The Good Guys (AU retailer) customer reviews\", source_url: \"https://www.thegoodguys.com.au/weber-q-2600n-plus-lp-midnight-black-28510024\" }\n];\n\nreturn [{\n  json: {\n    ...$input.item.json,\n    research: { product, facts, expert_findings, owner_sentiment }\n  }\n}];"
+      }
+    },
+    {
+      "id": "prompts-1",
+      "name": "Prepare Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $input.item.json;\nconst research = cfg.research;\n\nconst system_prompt = `You are an evidence-based product review writer.\n\nYour job is to transform VERIFIED PRODUCT DATA into a useful, accurate and readable product review.\n\nSTRICT RULES:\n1. Use ONLY information supplied in the research data.\n2. Do not invent specifications, features, prices, test results, experiences or opinions.\n3. Do not claim that you personally tested or used the product.\n4. Do not say \"we tested\" unless the supplied evidence explicitly states that our organization performed the test.\n5. Do not convert manufacturer claims into independently verified facts.\n6. Clearly distinguish: manufacturer claims, independent testing, owner/user opinions.\n7. If evidence is conflicting, acknowledge the conflict.\n8. If there is insufficient evidence for a claim, do not make the claim.\n9. Do not fabricate citations or evidence IDs - every evidence_id/evidence_ids entry anywhere in your output MUST be one of the ids supplied in the research data below.\n10. Do not mention information that is not supported by the input.\n11. Write for a normal consumer, not an AI researcher.\n12. Avoid generic filler and exaggerated marketing language.\n13. Some independent-test evidence below may be drawn from a closely related sibling model rather than the exact product being reviewed (this will be stated explicitly in that evidence item's source). When you use such evidence, you MUST say so in the text (e.g. \"in a review of the related Q2800N+ model...\") rather than presenting it as if it were tested on this exact unit.\n14. The review MUST begin with a complete Specifications section. Create exactly one specifications entry for EVERY single item in VERIFIED FACTS supplied below - do not omit, merge, skip, or summarize away any fact, even minor ones. Each entry needs a short label, the value/claim in plain language, and the evidence_id it came from. This is a full spec sheet, not a highlights list.\n15. The review MUST end with a single owner_consensus that blends ALL supplied OWNER SENTIMENT entries into one coherent closing paragraph covering the full range - positive, negative, and mixed topics alike, not just the flattering ones. Its evidence_ids array must include every single owner_sentiment id supplied below; do not cherry-pick only the positive ones.\n16. Do not use Markdown formatting anywhere in any string value - no **bold**, *italics*, backticks, or headings. All text fields are inserted as plain text on a web page, so literal asterisks or backticks would show up as garbage characters. Each pros/cons entry must be a single plain sentence, not a bolded label followed by a paragraph.\n\nSTRUCTURE (in this order): specifications (complete, first) -> pros/cons/sections (expert findings and general content) -> owner_consensus (complete blended close, last) -> verdict.\n\nSCORING (\"score\" field, a number from 0-10):\nThere was previously no guidance at all for this field, and it showed - real published reviews came out scoring 0.9 and 4.0-4.5 for products (a well-regarded mechanical keyboard, flagship earbuds) with mostly positive evidence, because the model had no anchor and defaulted to grading harshly. Use this scale:\n- 9-10: exceptional, standout in its category, evidence shows few or no meaningful flaws.\n- 7-8: strong recommendation, does its job well, only minor/niche caveats.\n- 5-6: solid and usable, but with real trade-offs a buyer should know about.\n- 3-4: below average, notable flaws outweigh the strengths in the evidence.\n- 0-2: reserve for products the evidence shows are seriously broken, unsafe, or not fit for purpose - this should be rare.\nThe presence of SOME cons is normal and does not by itself justify a low score - nearly every real product has cons. Base the score on the overall balance of verified facts, expert findings, and owner sentiment: if that balance is mostly positive with only minor caveats, score it 7 or higher. Do not average \"number of pros vs number of cons\" as if they were equally weighted evidence.\n\nThe final output MUST be valid JSON matching the requested schema. Do not output Markdown. Do not output explanations outside the JSON.`;\n\nconst user_prompt = `Create a product review from the following verified research.\n\nPRODUCT:\n${JSON.stringify(research.product)}\n\nVERIFIED FACTS:\n${JSON.stringify(research.facts)}\n\nEXPERT FINDINGS:\n${JSON.stringify(research.expert_findings)}\n\nOWNER SENTIMENT:\n${JSON.stringify(research.owner_sentiment)}\n\nReturn the review using the exact JSON schema provided in the format parameter. Remember: specifications must cover every fact above, and owner_consensus.evidence_ids must cover every owner sentiment id above.`;\n\nconst review_schema = {\n  type: \"object\",\n  properties: {\n    title: { type: \"string\" },\n    summary: { type: \"string\" },\n    specifications: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          label: { type: \"string\" },\n          value: { type: \"string\" },\n          evidence_id: { type: \"string\" }\n        },\n        required: [\"label\", \"value\", \"evidence_id\"]\n      }\n    },\n    score: { type: \"number\" },\n    best_for: { type: \"string\" },\n    not_best_for: { type: \"string\" },\n    pros: { type: \"array\", items: { type: \"string\" } },\n    cons: { type: \"array\", items: { type: \"string\" } },\n    expert_consensus: { type: \"string\" },\n    sections: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          heading: { type: \"string\" },\n          content: { type: \"string\" },\n          evidence_ids: { type: \"array\", items: { type: \"string\" } }\n        },\n        required: [\"heading\", \"content\", \"evidence_ids\"]\n      }\n    },\n    owner_consensus: {\n      type: \"object\",\n      properties: {\n        content: { type: \"string\" },\n        evidence_ids: { type: \"array\", items: { type: \"string\" } }\n      },\n      required: [\"content\", \"evidence_ids\"]\n    },\n    verdict: { type: \"string\" }\n  },\n  required: [\"title\", \"summary\", \"specifications\", \"pros\", \"cons\", \"sections\", \"owner_consensus\", \"verdict\"]\n};\n\nconst qa_system_prompt = `You are a strict fact-checking editor.\n\nReview the generated product review against the supplied evidence.\n\nFor every factual claim:\n1. Determine whether evidence exists.\n2. Determine whether the claim accurately represents the evidence.\n3. Detect unsupported claims.\n4. Detect invented specifications.\n5. Detect invented personal experience.\n6. Detect claims that incorrectly present manufacturer statements as independent testing.\n7. Detect contradictions.\n8. Detect any evidence sourced from a sibling/related model that is presented as if it were tested on the exact product being reviewed, without disclosing the distinction.\n9. Check the specifications array against VERIFIED FACTS: every fact id supplied must appear as a specifications[].evidence_id. Set specifications_complete to false if any fact is missing from specifications.\n10. Check owner_consensus.evidence_ids against OWNER SENTIMENT: every owner_sentiment id supplied must appear there, and the written content must genuinely reflect the negative/mixed topics too, not just the positive ones. Set owner_consensus_complete to false if any sentiment id is missing or if the text only reflects positive sentiment while ignoring supplied negative/mixed sentiment.\n11. confidence must be a decimal between 0 and 1 (e.g. 0.92 for 92% confidence) - never a whole number like 92 or 100.\n\nReturn JSON only, matching the requested schema.`;\n\nconst qa_schema = {\n  type: \"object\",\n  properties: {\n    status: { type: \"string\", enum: [\"PASS\", \"FAIL\"] },\n    confidence: { type: \"number\", minimum: 0, maximum: 1 },\n    specifications_complete: { type: \"boolean\" },\n    owner_consensus_complete: { type: \"boolean\" },\n    issues: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          type: { type: \"string\" },\n          text: { type: \"string\" },\n          reason: { type: \"string\" }\n        }\n      }\n    }\n  },\n  required: [\"status\", \"confidence\", \"specifications_complete\", \"owner_consensus_complete\", \"issues\"]\n};\n\nreturn [{\n  json: {\n    ...cfg,\n    system_prompt: system_prompt + `\\n\\nReturn ONLY a JSON object matching exactly this schema - no markdown fences, no extra commentary:\\n${JSON.stringify(review_schema)}`,\n    user_prompt,\n    review_schema,\n    qa_system_prompt: qa_system_prompt + `\\n\\nReturn ONLY a JSON object matching exactly this schema - no markdown fences, no extra commentary:\\n${JSON.stringify(qa_schema)}`,\n    qa_schema\n  }\n}];"
+      }
+    },
+    {
+      "id": "writer-http-1",
+      "name": "Ollama Writer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.ollama_base_url }}/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.writer_model, messages: [ { role: \"system\", content: $json.system_prompt }, { role: \"user\", content: $json.user_prompt } ], response_format: { type: \"json_object\" }, stream: false }) }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DEEP_SEEK_API_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-writer-1",
+      "name": "Parse Writer JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\n\nlet review = null;\nlet parseError = null;\ntry {\n  review = JSON.parse(raw);\n} catch (e) {\n  parseError = e.message;\n}\n\nconst prep = $('Prepare Prompts').item.json;\n\nlet retryCount = 0;\ntry {\n  retryCount = $('Retry Writer').item.json._retryCount;\n} catch (e) {\n  retryCount = 0;\n}\n\nreturn [{\n  json: {\n    review,\n    _parseOk: review !== null,\n    _parseError: parseError,\n    research: prep.research,\n    ollama_base_url: prep.ollama_base_url,\n    writer_model: prep.writer_model,\n    qa_model: prep.qa_model,\n    qa_min_confidence: prep.qa_min_confidence,\n    system_prompt: prep.system_prompt,\n    user_prompt: prep.user_prompt,\n    review_schema: prep.review_schema,\n    qa_system_prompt: prep.qa_system_prompt,\n    qa_schema: prep.qa_schema,\n    _retryCount: retryCount\n  }\n}];"
+      }
+    },
+    {
+      "id": "validate-1",
+      "name": "Validate Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst errors = [];\n\nif (!item._parseOk) {\n  errors.push(`Writer output was not valid JSON: ${item._parseError}`);\n}\n\nconst review = item.review;\nconst required = [\"title\", \"summary\", \"specifications\", \"pros\", \"cons\", \"sections\", \"owner_consensus\", \"verdict\"];\n\nif (review) {\n  for (const field of required) {\n    if (!(field in review)) errors.push(`Missing field: ${field}`);\n  }\n  if (review.pros && !Array.isArray(review.pros)) errors.push(\"pros must be an array\");\n  if (review.cons && !Array.isArray(review.cons)) errors.push(\"cons must be an array\");\n  if (\"score\" in review && typeof review.score !== \"number\") errors.push(\"score must be numeric\");\n\n  const factIds = item.research.facts.map(f => f.id);\n  const expertIds = item.research.expert_findings.map(f => f.id);\n  const sentimentIds = item.research.owner_sentiment.map(f => f.id);\n  const validIds = new Set([...factIds, ...expertIds, ...sentimentIds]);\n\n  if (Array.isArray(review.sections)) {\n    for (const section of review.sections) {\n      for (const evidenceId of (section.evidence_ids || [])) {\n        if (!validIds.has(evidenceId)) {\n          errors.push(`Section \"${section.heading}\" cites unknown evidence id: ${evidenceId}`);\n        }\n      }\n    }\n  }\n\n  // Specifications must be a full spec sheet: one entry per supplied fact, no omissions.\n  if (Array.isArray(review.specifications)) {\n    const specFactIds = new Set(review.specifications.map(s => s.evidence_id));\n    for (const id of factIds) {\n      if (!specFactIds.has(id)) {\n        errors.push(`Specifications section is missing fact ${id} - every supplied fact must appear as a specification entry`);\n      }\n    }\n    for (const spec of review.specifications) {\n      if (spec.evidence_id && !validIds.has(spec.evidence_id)) {\n        errors.push(`Specification \"${spec.label}\" cites unknown evidence id: ${spec.evidence_id}`);\n      }\n    }\n  } else {\n    errors.push(\"specifications must be an array covering every supplied fact\");\n  }\n\n  // owner_consensus must blend ALL supplied owner sentiment, not a subset.\n  if (review.owner_consensus && typeof review.owner_consensus === \"object\") {\n    if (!review.owner_consensus.content || typeof review.owner_consensus.content !== \"string\" || review.owner_consensus.content.trim().length === 0) {\n      errors.push(\"owner_consensus.content must be a non-empty string\");\n    }\n    const citedSentimentIds = new Set(review.owner_consensus.evidence_ids || []);\n    for (const id of sentimentIds) {\n      if (!citedSentimentIds.has(id)) {\n        errors.push(`owner_consensus is missing owner sentiment ${id} - the closing blend must cover every supplied sentiment item, not just the positive ones`);\n      }\n    }\n  } else {\n    errors.push(\"owner_consensus must be an object with { content, evidence_ids } blending every supplied owner sentiment item\");\n  }\n}\n\nreturn [{\n  json: {\n    ...item,\n    _valid: errors.length === 0,\n    _errors: errors\n  }\n}];"
+      }
+    },
+    {
+      "id": "if-valid-1",
+      "name": "IF Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1240,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "v1",
+              "leftValue": "={{ $json._valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "if-retry-1",
+      "name": "IF Retries Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1240,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "r1",
+              "leftValue": "={{ $json._retryCount }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "retry-writer-1",
+      "name": "Retry Writer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst feedback = `\\n\\nYour previous output failed validation for these reasons:\\n${item._errors.map(e => `- ${e}`).join('\\n')}\\n\\nFix these issues and return corrected JSON that strictly matches the schema and only cites evidence ids that were supplied.`;\n\nreturn [{\n  json: {\n    ollama_base_url: item.ollama_base_url,\n    writer_model: item.writer_model,\n    qa_model: item.qa_model,\n    qa_min_confidence: item.qa_min_confidence,\n    system_prompt: item.system_prompt,\n    user_prompt: item.user_prompt + feedback,\n    review_schema: item.review_schema,\n    qa_system_prompt: item.qa_system_prompt,\n    qa_schema: item.qa_schema,\n    research: item.research,\n    _retryCount: (item._retryCount || 0) + 1\n  }\n}];"
+      }
+    },
+    {
+      "id": "needs-human-validation-1",
+      "name": "Needs Human Review - Validation",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1480,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "prepare-qa-1",
+      "name": "Prepare QA Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst qa_user_prompt = `REVIEW TO CHECK:\\n${JSON.stringify(item.review)}\\n\\nSUPPLIED EVIDENCE:\\n${JSON.stringify(item.research)}\\n\\nCheck the review above against the supplied evidence and return your JSON verdict.`;\n\nreturn [{\n  json: {\n    ollama_base_url: item.ollama_base_url,\n    qa_model: item.qa_model,\n    qa_system_prompt: item.qa_system_prompt,\n    qa_user_prompt,\n    qa_schema: item.qa_schema,\n    qa_min_confidence: item.qa_min_confidence,\n    review: item.review,\n    research: item.research\n  }\n}];"
+      }
+    },
+    {
+      "id": "qa-http-1",
+      "name": "Ollama QA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1720,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.ollama_base_url }}/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.qa_model, messages: [ { role: \"system\", content: $json.qa_system_prompt }, { role: \"user\", content: $json.qa_user_prompt } ], response_format: { type: \"json_object\" }, stream: false }) }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DEEP_SEEK_API_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-qa-1",
+      "name": "Parse QA JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\n\nlet qa = null;\nlet parseError = null;\ntry {\n  qa = JSON.parse(raw);\n} catch (e) {\n  parseError = e.message;\n}\n\nconst prep = $('Prepare QA Prompt').item.json;\n\nreturn [{\n  json: {\n    qa,\n    _qaParseOk: qa !== null,\n    _qaParseError: parseError,\n    review: prep.review,\n    research: prep.research,\n    qa_min_confidence: prep.qa_min_confidence\n  }\n}];"
+      }
+    },
+    {
+      "id": "if-qa-1",
+      "name": "IF QA Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2200,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "q1",
+              "leftValue": "={{ $json._qaParseOk }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "q2",
+              "leftValue": "={{ $json.qa.status }}",
+              "rightValue": "PASS",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "q3",
+              "leftValue": "={{ $json.qa.confidence }}",
+              "rightValue": "={{ $json.qa_min_confidence }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "q4",
+              "leftValue": "={{ $json.qa.specifications_complete }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "q5",
+              "leftValue": "={{ $json.qa.owner_consensus_complete }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "needs-human-qa-1",
+      "name": "Needs Human Review - QA",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2440,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "save-review-1",
+      "name": "Save Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst approved = {\n  ...item.review,\n  qa: item.qa,\n  approved_at: new Date().toISOString(),\n  product: item.research.product\n};\n\nreturn [{ json: approved }];"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Product + Evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Product + Evidence": {
+      "main": [
+        [
+          {
+            "node": "Prepare Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Prompts": {
+      "main": [
+        [
+          {
+            "node": "Ollama Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Writer": {
+      "main": [
+        [
+          {
+            "node": "Parse Writer JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Writer JSON": {
+      "main": [
+        [
+          {
+            "node": "Validate Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Review": {
+      "main": [
+        [
+          {
+            "node": "IF Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Valid?": {
+      "main": [
+        [
+          {
+            "node": "Prepare QA Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Retries Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Retries Left?": {
+      "main": [
+        [
+          {
+            "node": "Retry Writer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Human Review - Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Writer": {
+      "main": [
+        [
+          {
+            "node": "Ollama Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare QA Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama QA": {
+      "main": [
+        [
+          {
+            "node": "Parse QA JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse QA JSON": {
+      "main": [
+        [
+          {
+            "node": "IF QA Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF QA Passed?": {
+      "main": [
+        [
+          {
+            "node": "Save Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Human Review - QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

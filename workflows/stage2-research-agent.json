@@ -1,0 +1,1063 @@
+{
+  "id": "stage2researchagent01",
+  "name": "Stage 2 - Research Agent + Review Writer (Ollama)",
+  "nodes": [
+    {
+      "id": "sticky-stage2",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -680,
+        -320
+      ],
+      "parameters": {
+        "content": "## Stage 2: Automated Research Agent\n\nGive it just a product name/brand/category. The DeepSeek API autonomously searches the web (via self-hosted SearXNG) and reads real pages (HTTP fetch + HTML-to-text) to build the evidence set itself — no hand-typed facts.\n\nRequires:\n- SearXNG reachable at http://searxng:8080\n- A DeepSeek API key (DEEP_SEEK_API_KEY env var passed to the n8n container). Model: deepseek-flash.",
+        "height": 260,
+        "width": 420
+      }
+    },
+    {
+      "id": "trigger-stage2",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -680,
+        60
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "config-stage2",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -440,
+        60
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "ollama_base_url",
+              "type": "string",
+              "value": "https://api.deepseek.com/v1"
+            },
+            {
+              "id": "c2",
+              "name": "research_model",
+              "type": "string",
+              "value": "deepseek-flash"
+            },
+            {
+              "id": "c3",
+              "name": "writer_model",
+              "type": "string",
+              "value": "deepseek-flash"
+            },
+            {
+              "id": "c4",
+              "name": "qa_model",
+              "type": "string",
+              "value": "deepseek-flash"
+            },
+            {
+              "id": "c5",
+              "name": "qa_min_confidence",
+              "type": "number",
+              "value": 0.85
+            },
+            {
+              "id": "c6",
+              "name": "research_model",
+              "type": "string",
+              "value": "deepseek-flash"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "productinput-stage2",
+      "name": "Product Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -200,
+        60
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "p1",
+              "name": "product_name",
+              "type": "string",
+              "value": "Weber Q2600N+"
+            },
+            {
+              "id": "p2",
+              "name": "brand",
+              "type": "string",
+              "value": "Weber"
+            },
+            {
+              "id": "p3",
+              "name": "category",
+              "type": "string",
+              "value": "Portable Gas Grill (LPG)"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "shaperesearch-stage2",
+      "name": "Shape Research",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const raw = $input.item.json;\nconst agentOut = raw.output ?? raw;\nconst steps = raw.intermediateSteps || [];\n\nconst readUrls = new Set();\nfor (const step of steps) {\n  const action = step && step.action;\n  if (action && action.tool === 'Read_Page' && action.toolInput && action.toolInput.url) {\n    readUrls.add(action.toolInput.url);\n  }\n}\n\nconst cfg = $('Config').item.json;\n\nreturn [{\n  json: {\n    ollama_base_url: cfg.ollama_base_url,\n    writer_model: cfg.writer_model,\n    qa_model: cfg.qa_model,\n    qa_min_confidence: cfg.qa_min_confidence,\n    research: agentOut,\n    verified_read_urls: Array.from(readUrls)\n  }\n}];"
+      }
+    },
+    {
+      "id": "prompts-1",
+      "name": "Prepare Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $input.item.json;\nconst research = cfg.research;\n\nconst system_prompt = `You are an evidence-based, SEO-aware product review writer for an affiliate review blog.\n\nYour job is to transform VERIFIED PRODUCT RESEARCH into a useful, accurate, search-optimized product review that genuinely helps someone decide whether to buy.\n\nSTRICT CONTENT RULES:\n1. Use ONLY information supplied in the research data.\n2. Do not invent specifications, features, prices, test results, experiences, opinions, or alternative products.\n3. Do not claim that you personally tested or used the product.\n4. Do not say \"we tested\" unless the supplied evidence explicitly states our organization performed the test.\n5. Do not convert manufacturer claims into independently verified facts.\n6. Clearly distinguish: manufacturer claims, independent testing, owner/user opinions.\n7. If evidence is conflicting, acknowledge the conflict.\n8. If there is insufficient evidence for a claim, do not make the claim.\n9. Do not fabricate citations or evidence IDs - every evidence_ids entry in a section or FAQ answer MUST be one of the ids supplied in the research data below.\n10. Do not mention information that is not supported by the input.\n11. Some independent-test evidence may be drawn from a closely related sibling model rather than the exact product being reviewed (this will be stated in that evidence item's source). When you use such evidence, say so in the text explicitly.\n12. When owner sentiment is based on very few reports (check the research data - if there is only one or two owner_sentiment items on a topic), phrase it as an individual report (\"one owner reported...\") rather than a generalization (\"customers report...\", \"many users say...\", \"buyers love...\"). Never generalize a single anecdote into a broad claim.\n\nSEO AND STRUCTURE RULES:\n13. Write \"seo_title\": a concise, keyword-rich title that includes the exact product name and the word \"Review\", 60 characters or fewer.\n14. Write \"meta_description\": a compelling search-snippet summary, 150-160 characters, including the product name and its primary use case.\n15. Write \"best_for\" and \"not_best_for\": one sentence each, describing the ideal buyer and who should skip this product, grounded only in supplied evidence.\n16. Write a \"faq\" array of 3 to 5 realistic buyer questions with answers. Answer ONLY using facts already present in the supplied evidence, and cite evidence_ids the same way as in \"sections\". If you lack evidence to answer a common buyer question, do not include that question.\n17. Write an \"alternatives\" array using ONLY the alternative products supplied in the research data's \"alternatives\" field - never invent alternative products. For each, give a one-sentence reason someone might choose it instead, and its evidence_ids where applicable (use an empty array if the research item had no evidence id, since alternatives are supplied directly, not id-tagged - just omit evidence_ids requirement for this field).\n18. Your \"verdict\" must give a clear, decisive recommendation grounded in the evidence (e.g. \"Buy this if you need X. Skip it if you need Y.\"). Do NOT use vague hedging phrases such as \"may want to consider\", \"could be a good option\", \"worth considering\", \"appears to be\", \"seems to be\", \"might be a good fit\".\n19. Never write an evidence id (e.g. \"EXP-001\", \"FACT-002\", \"SENT-003\") directly inside reader-facing prose - not in pros, cons, summary, verdict, best_for, not_best_for, or section/FAQ body text. Evidence ids belong ONLY in the dedicated evidence_ids arrays. Readers should never see a bracketed id like \"[EXP-001]\" on the page.\n\nSCORING (\"score\" field, a number from 0-10):\nThere was previously no guidance at all for this field, and it showed - real published reviews came out scoring 0.9 and 4.0-4.5 for products (a well-regarded mechanical keyboard, flagship earbuds) with mostly positive evidence, because the model had no anchor and defaulted to grading harshly. Use this scale:\n- 9-10: exceptional, standout in its category, evidence shows few or no meaningful flaws.\n- 7-8: strong recommendation, does its job well, only minor/niche caveats.\n- 5-6: solid and usable, but with real trade-offs a buyer should know about.\n- 3-4: below average, notable flaws outweigh the strengths in the evidence.\n- 0-2: reserve for products the evidence shows are seriously broken, unsafe, or not fit for purpose - this should be rare.\nThe presence of SOME cons is normal and does not by itself justify a low score - nearly every real product has cons. Base the score on the overall balance of verified facts, expert findings, and owner sentiment: if that balance is mostly positive with only minor caveats, score it 7 or higher. Do not average \"number of pros vs number of cons\" as if they were equally weighted evidence.\n\nThe final output MUST be valid JSON matching the requested schema. Do not output Markdown. Do not output explanations outside the JSON.`;\n\nconst user_prompt = `Create a product review from the following verified research.\n\nPRODUCT:\n${JSON.stringify(research.product)}\n\nVERIFIED FACTS:\n${JSON.stringify(research.facts)}\n\nEXPERT FINDINGS:\n${JSON.stringify(research.expert_findings)}\n\nOWNER SENTIMENT:\n${JSON.stringify(research.owner_sentiment)}\n\nREAL ALTERNATIVE PRODUCTS (use only these, do not invent others):\n${JSON.stringify(research.alternatives)}\n\nReturn the review using the exact JSON schema provided in the format parameter.`;\n\nconst review_schema = {\n  type: \"object\",\n  properties: {\n    seo_title: { type: \"string\" },\n    meta_description: { type: \"string\" },\n    title: { type: \"string\" },\n    summary: { type: \"string\" },\n    score: { type: \"number\" },\n    best_for: { type: \"string\" },\n    not_best_for: { type: \"string\" },\n    pros: { type: \"array\", items: { type: \"string\" } },\n    cons: { type: \"array\", items: { type: \"string\" } },\n    expert_consensus: { type: \"string\" },\n    owner_consensus: { type: \"string\" },\n    verdict: { type: \"string\" },\n    sections: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          heading: { type: \"string\" },\n          content: { type: \"string\" },\n          evidence_ids: { type: \"array\", items: { type: \"string\" } }\n        },\n        required: [\"heading\", \"content\", \"evidence_ids\"]\n      }\n    },\n    faq: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          question: { type: \"string\" },\n          answer: { type: \"string\" },\n          evidence_ids: { type: \"array\", items: { type: \"string\" } }\n        },\n        required: [\"question\", \"answer\", \"evidence_ids\"]\n      }\n    },\n    alternatives: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          name: { type: \"string\" },\n          reason: { type: \"string\" }\n        },\n        required: [\"name\", \"reason\"]\n      }\n    }\n  },\n  required: [\"seo_title\", \"meta_description\", \"title\", \"summary\", \"score\", \"best_for\", \"not_best_for\", \"pros\", \"cons\", \"verdict\", \"sections\", \"faq\", \"alternatives\"]\n};\n\nconst qa_system_prompt = `You are a strict fact-checking and SEO-quality editor.\n\nReview the generated product review against the supplied evidence.\n\nFor every factual claim:\n1. Determine whether evidence exists.\n2. Determine whether the claim accurately represents the evidence.\n3. Detect unsupported claims.\n4. Detect invented specifications.\n5. Detect invented personal experience.\n6. Detect claims that incorrectly present manufacturer statements as independent testing.\n7. Detect contradictions.\n8. Detect any evidence sourced from a sibling/related model that is presented as if it were tested on the exact product being reviewed, without disclosing the distinction.\n9. Detect any case where sentiment based on very few reports (fewer than 3 sources in the evidence) is generalized as if it reflects most/all customers (e.g. \"customers report\" or \"buyers love\" when only one or two anecdotes exist in the evidence).\n10. Detect vague, hedging verdict language (e.g. \"may want to consider\", \"could be a good option\", \"worth considering\") instead of a clear buy/skip recommendation.\n11. Detect any alternative product mentioned that does not appear in the supplied research alternatives list.\n12. Detect any FAQ answer not grounded in the supplied evidence.\n\nReturn JSON only, matching the requested schema.`;\n\nconst qa_schema = {\n  type: \"object\",\n  properties: {\n    status: { type: \"string\", enum: [\"PASS\", \"FAIL\"] },\n    confidence: { type: \"number\" },\n    issues: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          type: { type: \"string\" },\n          text: { type: \"string\" },\n          reason: { type: \"string\" }\n        }\n      }\n    }\n  },\n  required: [\"status\", \"confidence\", \"issues\"]\n};\n\nreturn [{\n  json: {\n    ...cfg,\n    system_prompt: system_prompt + `\\n\\nReturn ONLY a JSON object matching exactly this schema - no markdown fences, no extra commentary:\\n${JSON.stringify(review_schema)}`,\n    user_prompt,\n    review_schema,\n    qa_system_prompt: qa_system_prompt + `\\n\\nReturn ONLY a JSON object matching exactly this schema - no markdown fences, no extra commentary:\\n${JSON.stringify(qa_schema)}`,\n    qa_schema\n  }\n}];"
+      }
+    },
+    {
+      "id": "writer-http-1",
+      "name": "Ollama Writer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1720,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.ollama_base_url }}/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.writer_model, messages: [ { role: \"system\", content: $json.system_prompt }, { role: \"user\", content: $json.user_prompt } ], response_format: { type: \"json_object\" }, stream: false }) }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DEEP_SEEK_API_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-writer-1",
+      "name": "Parse Writer JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\n\nlet review = null;\nlet parseError = null;\ntry {\n  review = JSON.parse(raw);\n} catch (e) {\n  parseError = e.message;\n}\n\nconst prep = $('Prepare Prompts').item.json;\n\nlet retryCount = 0;\ntry {\n  retryCount = $('Retry Writer').item.json._retryCount;\n} catch (e) {\n  retryCount = 0;\n}\n\nlet qaRetryCount = 0;\ntry {\n  qaRetryCount = $('Retry Writer After QA').item.json._qaRetryCount;\n} catch (e) {\n  qaRetryCount = 0;\n}\n\nreturn [{\n  json: {\n    review,\n    _parseOk: review !== null,\n    _parseError: parseError,\n    research: prep.research,\n    ollama_base_url: prep.ollama_base_url,\n    writer_model: prep.writer_model,\n    qa_model: prep.qa_model,\n    qa_min_confidence: prep.qa_min_confidence,\n    system_prompt: prep.system_prompt,\n    user_prompt: prep.user_prompt,\n    review_schema: prep.review_schema,\n    qa_system_prompt: prep.qa_system_prompt,\n    qa_schema: prep.qa_schema,\n    _retryCount: retryCount,\n    _qaRetryCount: qaRetryCount\n  }\n}];"
+      }
+    },
+    {
+      "id": "validate-1",
+      "name": "Validate Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst errors = [];\n\nif (!item._parseOk) {\n  errors.push(`Writer output was not valid JSON: ${item._parseError}`);\n}\n\nconst review = item.review;\nconst required = [\"seo_title\", \"meta_description\", \"title\", \"summary\", \"pros\", \"cons\", \"verdict\", \"sections\", \"faq\", \"alternatives\", \"best_for\", \"not_best_for\"];\n\nif (review) {\n  for (const field of required) {\n    if (!(field in review)) errors.push(`Missing field: ${field}`);\n  }\n  if (review.pros && !Array.isArray(review.pros)) errors.push(\"pros must be an array\");\n  if (review.cons && !Array.isArray(review.cons)) errors.push(\"cons must be an array\");\n  if (\"score\" in review && typeof review.score !== \"number\") errors.push(\"score must be numeric\");\n\n  if (review.seo_title && review.seo_title.length > 60) {\n    errors.push(`seo_title is ${review.seo_title.length} chars, must be 60 or fewer`);\n  }\n  if (review.meta_description && (review.meta_description.length > 160 || review.meta_description.length < 100)) {\n    errors.push(`meta_description is ${review.meta_description.length} chars, must be roughly 100-160`);\n  }\n  if (Array.isArray(review.faq) && review.faq.length < 3) {\n    errors.push(`faq has only ${review.faq.length} entries, need at least 3`);\n  }\n  if (Array.isArray(review.alternatives) && review.alternatives.length < 2) {\n    errors.push(`alternatives has only ${review.alternatives.length} entries, need at least 2`);\n  }\n\n  const hedgePhrases = [\"may want to consider\", \"could be a good option\", \"worth considering\", \"appears to be\", \"seems to be\", \"might be a good fit\", \"might be worth\"];\n  const verdictLower = (review.verdict || \"\").toLowerCase();\n  for (const phrase of hedgePhrases) {\n    if (verdictLower.includes(phrase)) {\n      errors.push(`verdict uses hedging language (\"${phrase}\") instead of a decisive recommendation`);\n    }\n  }\n\n  const validIds = new Set([\n    ...item.research.facts.map(f => f.id),\n    ...item.research.expert_findings.map(f => f.id),\n    ...item.research.owner_sentiment.map(f => f.id)\n  ]);\n\n  if (Array.isArray(review.sections)) {\n    for (const section of review.sections) {\n      for (const evidenceId of (section.evidence_ids || [])) {\n        if (!validIds.has(evidenceId)) {\n          errors.push(`Section \"${section.heading}\" cites unknown evidence id: ${evidenceId}`);\n        }\n      }\n    }\n  }\n\n  if (Array.isArray(review.faq)) {\n    for (const qa of review.faq) {\n      for (const evidenceId of (qa.evidence_ids || [])) {\n        if (!validIds.has(evidenceId)) {\n          errors.push(`FAQ \"${qa.question}\" cites unknown evidence id: ${evidenceId}`);\n        }\n      }\n    }\n  }\n\n  if (Array.isArray(review.alternatives)) {\n    const realNames = new Set((item.research.alternatives || []).map(a => a.name.toLowerCase()));\n    for (const alt of review.alternatives) {\n      if (!realNames.has((alt.name || \"\").toLowerCase())) {\n        errors.push(`Alternative \"${alt.name}\" is not in the supplied research alternatives list (possibly invented)`);\n      }\n    }\n  }\n}\n\nreturn [{\n  json: {\n    ...item,\n    _valid: errors.length === 0,\n    _errors: errors\n  }\n}];"
+      }
+    },
+    {
+      "id": "if-valid-1",
+      "name": "IF Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2440,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "v1",
+              "leftValue": "={{ $json._valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "if-retry-1",
+      "name": "IF Retries Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2440,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "r1",
+              "leftValue": "={{ $json._retryCount }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "retry-writer-1",
+      "name": "Retry Writer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst feedback = `\\n\\nYour previous output failed validation for these reasons:\\n${item._errors.map(e => `- ${e}`).join('\\n')}\\n\\nFix these issues and return corrected JSON that strictly matches the schema and only cites evidence ids that were supplied.`;\n\nreturn [{\n  json: {\n    ollama_base_url: item.ollama_base_url,\n    writer_model: item.writer_model,\n    qa_model: item.qa_model,\n    qa_min_confidence: item.qa_min_confidence,\n    system_prompt: item.system_prompt,\n    user_prompt: item.user_prompt + feedback,\n    review_schema: item.review_schema,\n    qa_system_prompt: item.qa_system_prompt,\n    qa_schema: item.qa_schema,\n    research: item.research,\n    _retryCount: (item._retryCount || 0) + 1\n  }\n}];"
+      }
+    },
+    {
+      "id": "needs-human-validation-1",
+      "name": "Needs Human Review - Validation",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2680,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "prepare-qa-1",
+      "name": "Prepare QA Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2680,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst qa_user_prompt = `REVIEW TO CHECK:\\n${JSON.stringify(item.review)}\\n\\nSUPPLIED EVIDENCE:\\n${JSON.stringify(item.research)}\\n\\nCheck the review above against the supplied evidence and return your JSON verdict.`;\n\nreturn [{\n  json: {\n    ollama_base_url: item.ollama_base_url,\n    qa_model: item.qa_model,\n    qa_system_prompt: item.qa_system_prompt,\n    qa_user_prompt,\n    qa_schema: item.qa_schema,\n    qa_min_confidence: item.qa_min_confidence,\n    review: item.review,\n    research: item.research,\n    _qaRetryCount: item._qaRetryCount\n  }\n}];"
+      }
+    },
+    {
+      "id": "qa-http-1",
+      "name": "Ollama QA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2920,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.ollama_base_url }}/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.qa_model, messages: [ { role: \"system\", content: $json.qa_system_prompt }, { role: \"user\", content: $json.qa_user_prompt } ], response_format: { type: \"json_object\" }, stream: false }) }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DEEP_SEEK_API_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-qa-1",
+      "name": "Parse QA JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3160,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\n\nlet qa = null;\nlet parseError = null;\ntry {\n  qa = JSON.parse(raw);\n} catch (e) {\n  parseError = e.message;\n}\n\nconst prep = $('Prepare QA Prompt').item.json;\n\nreturn [{\n  json: {\n    qa,\n    _qaParseOk: qa !== null,\n    _qaParseError: parseError,\n    review: prep.review,\n    research: prep.research,\n    qa_min_confidence: prep.qa_min_confidence,\n    _qaRetryCount: prep._qaRetryCount || 0\n  }\n}];"
+      }
+    },
+    {
+      "id": "if-qa-1",
+      "name": "IF QA Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3400,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "q1",
+              "leftValue": "={{ $json._qaParseOk }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "q2",
+              "leftValue": "={{ $json.qa.status }}",
+              "rightValue": "PASS",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "q3",
+              "leftValue": "={{ $json.qa.confidence }}",
+              "rightValue": "={{ $json.qa_min_confidence }}",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "if-qa-retry-1",
+      "name": "IF QA Retries Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3400,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "qr1",
+              "leftValue": "={{ $json._qaRetryCount || 0 }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "retry-writer-qa-1",
+      "name": "Retry Writer After QA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3160,
+        460
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst prep = $('Prepare Prompts').item.json;\n\nconst issues = (item.qa && item.qa.issues) || [];\nconst issuesText = issues.map(i => `- [${i.type}] \"${i.text}\" - ${i.reason}`).join('\\n');\n\nconst feedback = `\\n\\nA strict fact-checking editor reviewed your previous draft against the supplied evidence and rejected it (status: ${item.qa && item.qa.status}, confidence: ${item.qa && item.qa.confidence}, minimum required: ${item.qa_min_confidence}). Issues found:\\n${issuesText}\\n\\nRewrite the full review to fix every issue above. Do not overstate, generalize beyond, or misrepresent what the supplied evidence actually shows - if evidence only gives raw numbers with no comparison, do not call it 'class-leading' or 'top of the class'; if a claim is based on fewer than three sources, phrase it as an individual report, not a general consensus. Keep everything else about the review that was not flagged as an issue.`;\n\nreturn [{\n  json: {\n    ollama_base_url: prep.ollama_base_url,\n    writer_model: prep.writer_model,\n    qa_model: prep.qa_model,\n    qa_min_confidence: prep.qa_min_confidence,\n    system_prompt: prep.system_prompt,\n    user_prompt: prep.user_prompt + feedback,\n    review_schema: prep.review_schema,\n    qa_system_prompt: prep.qa_system_prompt,\n    qa_schema: prep.qa_schema,\n    research: prep.research,\n    _qaRetryCount: (item._qaRetryCount || 0) + 1\n  }\n}];"
+      }
+    },
+    {
+      "id": "needs-human-qa-1",
+      "name": "Needs Human Review - QA",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3640,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "save-review-1",
+      "name": "Save Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3640,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst approved = {\n  ...item.review,\n  qa: item.qa,\n  approved_at: new Date().toISOString(),\n  product: item.research.product\n};\n\nreturn [{ json: approved }];"
+      }
+    },
+    {
+      "id": "validate-research-trust",
+      "name": "Validate Research Trust",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst errors = [];\n\nif (!item._parseOk || !item.research) {\n  errors.push(`Research extraction output was not valid JSON: ${item._parseError}`);\n  return [{ json: { ...item, _research_trust_valid: false, _research_trust_errors: errors } }];\n}\n\nconst research = item.research;\nconst verifiedUrls = new Set(item.verified_read_urls || []);\n\nfunction hostnameOf(url) {\n  try { const m = String(url).match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/(?:[^@/]+@)?([^/:?#]+)/); return m ? m[1].toLowerCase().replace(/^www\\./, '') : ''; } catch (e) { return ''; }\n}\n\nconst brandHost = hostnameOf((research.facts && research.facts[0] && research.facts[0].source_url) || '');\n\nconst allEvidence = [\n  ...(research.facts || []),\n  ...(research.expert_findings || []),\n  ...(research.owner_sentiment || [])\n];\n\nfor (const ev of allEvidence) {\n  if (!ev.source_url) {\n    errors.push(`Evidence ${ev.id} has no source_url`);\n  } else if (!verifiedUrls.has(ev.source_url)) {\n    errors.push(`Evidence ${ev.id} cites ${ev.source_url} but that page was never actually fetched - not acceptable evidence`);\n  }\n}\n\nconst independentReads = (research.expert_findings || []).filter(f =>\n  f.type === 'independent_test' &&\n  f.source_url && verifiedUrls.has(f.source_url) &&\n  hostnameOf(f.source_url) !== brandHost\n);\n\nif (independentReads.length === 0) {\n  errors.push('No genuinely independent (non-manufacturer-domain) expert finding was found AND actually fetched. At least one is required before this product can be reviewed.');\n}\n\nif (!research.alternatives || research.alternatives.length < 2) {\n  errors.push('Research must include at least 2 real alternative products.');\n}\n\nreturn [{\n  json: {\n    ...item,\n    _research_trust_valid: errors.length === 0,\n    _research_trust_errors: errors\n  }\n}];"
+      }
+    },
+    {
+      "id": "if-research-trust",
+      "name": "IF Research Trustworthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1600,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rt1",
+              "leftValue": "={{ $json._research_trust_valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "needs-human-review-research",
+      "name": "Needs Human Review - Research",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "search-all-categories",
+      "name": "Search All Categories",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $input.item.json;\nconst productName = cfg.product_name;\n\nconst queries = {\n  specs: `${productName} official specifications`,\n  independent: `${productName} independent expert review`,\n  owner: `${productName} owner reviews customer experience`,\n  alternatives: `${productName} alternatives comparison vs`\n};\n\nconst searches = {};\nfor (const [key, q] of Object.entries(queries)) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: 'http://searxng:8080/search',\n      qs: { format: 'json', language: 'en', q },\n      json: true\n    });\n    searches[key] = (res.results || []).slice(0, 6).map(r => ({ title: r.title, url: r.url, content: r.content }));\n  } catch (e) {\n    searches[key] = [];\n  }\n}\n\nreturn [{\n  json: {\n    ...cfg,\n    searches\n  }\n}];"
+      }
+    },
+    {
+      "id": "prepare-choose-prompt",
+      "name": "Prepare Choose Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $input.item.json;\n\nconst choose_system_prompt = `You are a research assistant choosing which real search results are worth reading in full to research a product.\n\nYou will be given search results grouped into 4 categories:\n- specs: official manufacturer specifications\n- independent: an independent/expert review (must NOT be the manufacturer's own website)\n- owner: owner/customer reviews\n- alternatives: competing products\n\nRules:\n1. For 'independent', you MUST pick a URL whose domain is different from the official manufacturer's domain (the manufacturer's domain will be visible in the 'specs' results).\n2. For each category, pick the single best, most relevant, most trustworthy URL from the results ACTUALLY PROVIDED - never invent a URL not present in the given results.\n3. NEVER pick a URL ending in .pdf, or any URL that is obviously a PDF/binary document - those cannot be read as text. Always prefer a normal HTML web page.\n4. If a category truly has no usable (non-PDF) results, omit it from your picks.\n5. For 'specs', 'owner' and 'alternatives', you may pick up to 2 URLs (a primary and a backup) in case one fails to load. For 'independent', pick up to 3 URLs (a primary and two backups) - independent review sites are especially prone to membership walls, paywalls and JS-only content that leaves no usable text once fetched, so give yourself more chances to land on one that actually works.\n6. You MUST include at least one pick for EACH of the four categories (specs, independent, owner, alternatives) as long as that category has at least one non-PDF result available. Do not skip a category just because another category seems more interesting.\n7. Output JSON only: {\"picks\": [{\"category\": \"...\", \"url\": \"...\", \"why\": \"...\"}]}`;\n\nconst choose_user_prompt = `Product: ${cfg.product_name} (${cfg.brand}, ${cfg.category})\n\nSEARCH RESULTS BY CATEGORY:\n${JSON.stringify(cfg.searches)}\n\nPick the URLs worth reading in full.`;\n\nconst choose_schema = {\"type\": \"object\", \"properties\": {\"picks\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"category\": {\"type\": \"string\", \"enum\": [\"specs\", \"independent\", \"owner\", \"alternatives\"]}, \"url\": {\"type\": \"string\"}, \"why\": {\"type\": \"string\"}}, \"required\": [\"category\", \"url\", \"why\"]}}}, \"required\": [\"picks\"]};\n\nreturn [{\n  json: {\n    ...cfg,\n    choose_system_prompt: choose_system_prompt + `\\n\\nReturn ONLY a JSON object matching exactly this schema - no markdown fences, no extra commentary:\\n${JSON.stringify(choose_schema)}`,\n    choose_user_prompt,\n    choose_schema\n  }\n}];"
+      }
+    },
+    {
+      "id": "choose-sources-http",
+      "name": "Choose Sources",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        320,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.ollama_base_url }}/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.research_model, messages: [ { role: \"system\", content: $json.choose_system_prompt }, { role: \"user\", content: $json.choose_user_prompt } ], response_format: { type: \"json_object\" }, stream: false }) }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DEEP_SEEK_API_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-chosen-urls",
+      "name": "Parse Chosen URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\nlet parsed = null, parseError = null;\ntry { parsed = JSON.parse(raw); } catch (e) { parseError = e.message; }\n\nconst prep = $('Prepare Choose Prompt').item.json;\nlet _researchRetryCount = 0;\ntry { _researchRetryCount = $('Retry Choose Sources').item.json._researchRetryCount || 0; } catch (e) { _researchRetryCount = 0; }\n\nreturn [{\n  json: {\n    ollama_base_url: prep.ollama_base_url,\n    research_model: prep.research_model,\n    writer_model: prep.writer_model,\n    qa_model: prep.qa_model,\n    qa_min_confidence: prep.qa_min_confidence,\n    product_name: prep.product_name,\n    brand: prep.brand,\n    category: prep.category,\n    picks: (parsed && parsed.picks) || [],\n    _chooseParseError: parseError,\n    _researchRetryCount\n  }\n}];"
+      }
+    },
+    {
+      "id": "fetch-chosen-pages",
+      "name": "Fetch Chosen Pages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst picks = item.picks || [];\nconst pages = [];\nconst productName = (item.product_name || '').toLowerCase();\n\nfunction extractRelevantWindow(text, keyword, windowSize) {\n  if (!keyword) return text.slice(0, windowSize);\n  const lower = text.toLowerCase();\n  const idx = lower.indexOf(keyword);\n  if (idx === -1) return text.slice(0, windowSize);\n  const start = Math.max(0, idx - Math.floor(windowSize * 0.25));\n  return text.slice(start, start + windowSize);\n}\n\nfor (const pick of picks) {\n  try {\n    const html = await this.helpers.httpRequest({\n      method: 'GET',\n      url: pick.url,\n      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' }\n    });\n    const cleaned = String(html)\n      .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n      .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n      .replace(/<!--[\\s\\S]*?-->/g, ' ')\n      .replace(/<[^>]+>/g, ' ')\n      .replace(/&nbsp;|&amp;|&quot;|&#39;/g, ' ')\n      .replace(/\\s+/g, ' ')\n      .trim();\n    const text = extractRelevantWindow(cleaned, productName, 7000);\n    pages.push({ category: pick.category, url: pick.url, why: pick.why, text });\n  } catch (e) {\n    pages.push({ category: pick.category, url: pick.url, why: pick.why, text: `[failed to fetch: ${e.message}]` });\n  }\n}\n\nreturn [{\n  json: {\n    ...item,\n    fetched_pages: pages,\n    verified_read_urls: pages.filter(p => !p.text.startsWith('[failed')).map(p => p.url)\n  }\n}];"
+      }
+    },
+    {
+      "id": "prepare-extract-prompt",
+      "name": "Prepare Extract Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\n\nconst extract_system_prompt = `You are a product research data extractor. You will be given the ACTUAL TEXT content of several real web pages that were already fetched for you (each labeled with its category and source_url), plus the product's name/brand/category.\n\nYour job: extract ONLY real, verifiable evidence from the text you were given. Never invent facts, numbers, quotes, or URLs, and never use information not present in the provided page text. If a page's text looks like binary/garbage data (e.g. starts with %PDF or is unreadable symbols) or says \"[failed to fetch...]\", treat that category as having no usable evidence - return an empty array for it, do not guess.\n\nRules:\n1. From the page(s) labeled 'specs', extract manufacturer_claim facts (ids FACT-001, FACT-002, ...).\n2. From the page(s) labeled 'independent', extract independent_test findings (ids EXP-001, EXP-002, ...). If that page is actually about a closely related sibling/variant model rather than the exact product, say so explicitly in the source_name field.\n3. From the page(s) labeled 'owner', extract owner_sentiment items (ids SENT-001, SENT-002, ...), each with topic/sentiment/detail.\n4. From the page(s) labeled 'alternatives', extract 2-3 real alternative product names actually mentioned in that text, each with a one-sentence reason and using the given source_url.\n5. Every item has exactly two source fields, and you must never mix them up:\n   - \"source_name\": a short human-readable label, e.g. \"ProductReview.com.au\" or \"Weber official website\".\n   - \"source_url\": the EXACT full URL given to you in that page's \"SOURCE_URL:\" label above (always starts with http:// or https://) - never put a domain name or description here, only the literal URL string you were given.\n   Example of a correctly formatted item: {\"id\": \"SENT-001\", \"topic\": \"durability\", \"sentiment\": \"negative\", \"detail\": \"...\", \"source_name\": \"ProductReview.com.au\", \"source_url\": \"https://www.productreview.com.au/listings/example\"}\n6. If a category's page text is empty, marked failed, unreadable, or has no relevant information, return an empty array for that category.\n7. Do not fabricate anything not present in the given text.\n8. Output JSON only, matching the required schema.`;\n\nconst pageBlocks = (item.fetched_pages || []).map(p =>\n  `--- CATEGORY: ${p.category} | SOURCE_URL: ${p.url} ---\\n${p.text}`\n).join('\\n\\n');\n\nconst extract_user_prompt = `PRODUCT: ${JSON.stringify({ name: item.product_name, brand: item.brand, category: item.category })}\n\nFETCHED PAGE CONTENT:\n${pageBlocks}\n\nExtract the structured research JSON from the above.`;\n\nconst research_schema = {\"type\": \"object\", \"properties\": {\"product\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}, \"brand\": {\"type\": \"string\"}, \"category\": {\"type\": \"string\"}, \"model\": {\"type\": \"string\"}}, \"required\": [\"name\", \"brand\", \"category\", \"model\"]}, \"facts\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}, \"claim\": {\"type\": \"string\"}, \"source_name\": {\"type\": \"string\"}, \"source_url\": {\"type\": \"string\"}, \"type\": {\"type\": \"string\", \"enum\": [\"manufacturer_claim\"]}}, \"required\": [\"id\", \"claim\", \"source_name\", \"source_url\", \"type\"]}}, \"expert_findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}, \"finding\": {\"type\": \"string\"}, \"source_name\": {\"type\": \"string\"}, \"source_url\": {\"type\": \"string\"}, \"type\": {\"type\": \"string\", \"enum\": [\"independent_test\"]}}, \"required\": [\"id\", \"finding\", \"source_name\", \"source_url\", \"type\"]}}, \"owner_sentiment\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}, \"topic\": {\"type\": \"string\"}, \"sentiment\": {\"type\": \"string\"}, \"detail\": {\"type\": \"string\"}, \"source_name\": {\"type\": \"string\"}, \"source_url\": {\"type\": \"string\"}}, \"required\": [\"id\", \"topic\", \"sentiment\", \"detail\", \"source_name\", \"source_url\"]}}, \"alternatives\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}, \"reason\": {\"type\": \"string\"}, \"source_url\": {\"type\": \"string\"}}, \"required\": [\"name\", \"reason\", \"source_url\"]}}}, \"required\": [\"product\", \"facts\", \"expert_findings\", \"owner_sentiment\", \"alternatives\"]};\n\nreturn [{\n  json: {\n    ...item,\n    extract_system_prompt: extract_system_prompt + `\\n\\nReturn ONLY a JSON object matching exactly this schema - no markdown fences, no extra commentary:\\n${JSON.stringify(research_schema)}`,\n    extract_user_prompt,\n    research_schema\n  }\n}];"
+      }
+    },
+    {
+      "id": "extract-research-http",
+      "name": "Extract Research JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.ollama_base_url }}/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.research_model, messages: [ { role: \"system\", content: $json.extract_system_prompt }, { role: \"user\", content: $json.extract_user_prompt } ], response_format: { type: \"json_object\" }, stream: false }) }}",
+        "options": {},
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DEEP_SEEK_API_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-research-json",
+      "name": "Parse Research JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\nlet research = null, parseError = null;\ntry { research = JSON.parse(raw); } catch (e) { parseError = e.message; }\n\nconst prep = $('Prepare Extract Prompt').item.json;\n\nreturn [{\n  json: {\n    ollama_base_url: prep.ollama_base_url,\n    writer_model: prep.writer_model,\n    qa_model: prep.qa_model,\n    qa_min_confidence: prep.qa_min_confidence,\n    research,\n    _parseOk: research !== null,\n    _parseError: parseError,\n    verified_read_urls: prep.verified_read_urls,\n    _researchRetryCount: prep._researchRetryCount || 0\n  }\n}];"
+      }
+    },
+    {
+      "id": "if-research-retries-left",
+      "name": "IF Research Retries Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1600,
+        480
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rr1",
+              "leftValue": "={{ $json._researchRetryCount || 0 }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "retry-choose-sources",
+      "name": "Retry Choose Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        680
+      ],
+      "parameters": {
+        "jsCode": "\nconst item = $input.item.json;\nconst prep = $('Prepare Choose Prompt').item.json;\n\nlet priorPicks = [];\ntry { priorPicks = $('Parse Chosen URLs').item.json.picks || []; } catch (e) { priorPicks = []; }\nconst triedIndependentUrls = priorPicks.filter(p => p.category === 'independent').map(p => p.url);\n\nconst feedback = `\\n\\nYour previous source picks failed a trust check for these reasons:\\n${(item._research_trust_errors || []).map(e => `- ${e}`).join('\\n')}\\n\\nPick sources again. In particular:\\n- Make sure the 'independent' pick's domain is genuinely different from the 'specs' pick's domain - do not reuse the same site for both categories.\\n- Only pick URLs that are actually present in the given search results.${triedIndependentUrls.length ? `\\n- These 'independent' URLs were already tried and did NOT yield usable independent review text (blocked, paywalled, membership-gated, or JS-only with no real article content): ${triedIndependentUrls.join(', ')}. Pick DIFFERENT 'independent' URL(s) this time - do not repeat any of them, even as a backup.` : ''}`;\n\nreturn [{\n  json: {\n    ...prep,\n    choose_user_prompt: prep.choose_user_prompt + feedback,\n    _researchRetryCount: (item._researchRetryCount || 0) + 1\n  }\n}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Product Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Product Input": {
+      "main": [
+        [
+          {
+            "node": "Search All Categories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Research": {
+      "main": [
+        [
+          {
+            "node": "Validate Research Trust",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Prompts": {
+      "main": [
+        [
+          {
+            "node": "Ollama Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Writer": {
+      "main": [
+        [
+          {
+            "node": "Parse Writer JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Writer JSON": {
+      "main": [
+        [
+          {
+            "node": "Validate Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Review": {
+      "main": [
+        [
+          {
+            "node": "IF Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Valid?": {
+      "main": [
+        [
+          {
+            "node": "Prepare QA Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Retries Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Retries Left?": {
+      "main": [
+        [
+          {
+            "node": "Retry Writer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Human Review - Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Writer": {
+      "main": [
+        [
+          {
+            "node": "Ollama Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare QA Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama QA": {
+      "main": [
+        [
+          {
+            "node": "Parse QA JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse QA JSON": {
+      "main": [
+        [
+          {
+            "node": "IF QA Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF QA Passed?": {
+      "main": [
+        [
+          {
+            "node": "Save Review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF QA Retries Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF QA Retries Left?": {
+      "main": [
+        [
+          {
+            "node": "Retry Writer After QA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Human Review - QA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Writer After QA": {
+      "main": [
+        [
+          {
+            "node": "Ollama Writer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Research Trust": {
+      "main": [
+        [
+          {
+            "node": "IF Research Trustworthy?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Research Trustworthy?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Prompts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Research Retries Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search All Categories": {
+      "main": [
+        [
+          {
+            "node": "Prepare Choose Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Choose Prompt": {
+      "main": [
+        [
+          {
+            "node": "Choose Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Choose Sources": {
+      "main": [
+        [
+          {
+            "node": "Parse Chosen URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Chosen URLs": {
+      "main": [
+        [
+          {
+            "node": "Fetch Chosen Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Chosen Pages": {
+      "main": [
+        [
+          {
+            "node": "Prepare Extract Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Extract Prompt": {
+      "main": [
+        [
+          {
+            "node": "Extract Research JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Research JSON": {
+      "main": [
+        [
+          {
+            "node": "Parse Research JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Research JSON": {
+      "main": [
+        [
+          {
+            "node": "Validate Research Trust",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Research Retries Left?": {
+      "main": [
+        [
+          {
+            "node": "Retry Choose Sources",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs Human Review - Research",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Choose Sources": {
+      "main": [
+        [
+          {
+            "node": "Choose Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

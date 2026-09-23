@@ -1,0 +1,403 @@
+{
+  "id": "stage3adiscoverqueue01",
+  "name": "Stage 3a - Discover & Queue Popular Products",
+  "nodes": [
+    {
+      "id": "sticky-3a",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        -480
+      ],
+      "width": 520,
+      "height": 360,
+      "parameters": {
+        "content": "## Stage 3a - Discover & Queue Popular Products\n\nRuns daily (or on demand). Rotates through a category list, uses SearXNG + DeepSeek to shortlist real, currently popular products (same discovery logic as Stage 0), then INSERTS them into the persistent `rgh.product_queue` Postgres table instead of processing them immediately.\n\nDedupes against every product already in the table (not just this run) so repeated daily runs keep adding genuinely NEW products - `ON CONFLICT (product_key) DO NOTHING`. Assigns country_code and review_style to each new row by rotation, so the queue naturally spreads across markets/formats.\n\nStage 3b (`stage3b-process-queue.json`) is the separate workflow that reads this table row-by-row and writes/publishes the actual reviews.\n\nRequires: SearXNG at http://searxng:8080, a DeepSeek API key (DEEP_SEEK_API_KEY env var, model: deepseek-flash), and an n8n Postgres credential (\"RGH Content DB\") pointing at the n8n-db Postgres instance (same one n8n already uses), database `n8n`.",
+        "height": 360,
+        "width": 520
+      }
+    },
+    {
+      "id": "trigger-cron-3a",
+      "name": "Daily Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1200,
+        -80
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "trigger-manual-3a",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        80
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "trigger-webhook-3a",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        240
+      ],
+      "parameters": {
+        "path": "rgh-discover-products",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "config-3a",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        80
+      ],
+      "parameters": {
+        "jsCode": "// Optional overrides via webhook body: { \"category\": \"...\", \"product_count\": 10 }\nconst body = ($json && $json.body) ? $json.body : {};\n\nconst categories = [\n  \"wireless earbuds\",\n  \"robot vacuums\",\n  \"air fryers\",\n  \"gaming laptops\",\n  \"standing desks\",\n  \"smart watches\",\n  \"coffee makers\",\n  \"electric bikes\",\n  \"4k monitors\",\n  \"mechanical keyboards\",\n  \"portable power stations\",\n  \"smart home security cameras\",\n  \"noise cancelling headphones\",\n  \"ergonomic office chairs\"\n];\n\n// Rotate deterministically by day-of-year so repeated daily runs sweep the\n// whole category list over time instead of hammering the same category.\nconst now = new Date();\nconst startOfYear = new Date(Date.UTC(now.getUTCFullYear(), 0, 0));\nconst dayOfYear = Math.floor((now - startOfYear) / 86400000);\nconst rotatedCategory = categories[dayOfYear % categories.length];\n\nconst countries = [\"US\", \"GB\", \"CA\", \"AU\"];\nconst review_styles = [\"in_depth_review\", \"buyers_guide\", \"comparison\", \"budget_pick\"];\n\nreturn [{\n  json: {\n    category: body.category || rotatedCategory,\n    product_count: body.product_count || 10,\n    countries,\n    review_styles,\n    ollama_base_url: \"https://api.deepseek.com/v1\",\n    research_model: \"deepseek-flash\"\n  }\n}];"
+      }
+    },
+    {
+      "id": "get-existing-keys-3a",
+      "name": "Get Existing Product Keys",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -720,
+        80
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT product_key, lower(regexp_replace(brand || ' ' || product_name, '[^a-zA-Z0-9]+', ' ', 'g')) AS normalized_name FROM rgh.product_queue",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "rgh-content-db",
+          "name": "RGH Content DB"
+        }
+      }
+    },
+    {
+      "id": "search-candidates-3a",
+      "name": "Search Category Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $('Config').item.json;\nconst category = cfg.category;\n\nconst queries = [\n  `most popular ${category} 2026`,\n  `best selling ${category}`,\n  `top ${category} to buy right now`,\n  `${category} buying guide reviews`\n];\n\nconst seen = new Map();\nfor (const q of queries) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: 'http://searxng:8080/search',\n      qs: { format: 'json', language: 'en', q },\n      json: true\n    });\n    for (const r of (res.results || []).slice(0, 12)) {\n      if (!seen.has(r.url)) {\n        seen.set(r.url, { title: r.title, url: r.url, content: (r.content || '').slice(0, 400) });\n      }\n    }\n  } catch (e) {\n    // one query failing shouldn't kill discovery - just yields fewer candidates\n  }\n}\n\nreturn [{\n  json: {\n    ...cfg,\n    candidate_pages: Array.from(seen.values())\n  }\n}];"
+      }
+    },
+    {
+      "id": "prepare-discovery-3a",
+      "name": "Prepare Discovery Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $input.item.json;\n\nconst existingRows = $('Get Existing Product Keys').all().map(i => i.json);\nconst existingNames = existingRows.map(r => r.normalized_name).filter(Boolean);\n\nconst system_prompt = `You are a product research assistant compiling a shortlist of real, currently popular, currently-sold products for an affiliate review site.\n\nYou will be given real web search results (title/url/snippet) about a product category.\n\nRules:\n1. Extract ONLY real products that are actually named/mentioned in the given search results - never invent a product.\n2. Favour products that appear to be genuinely POPULAR / best-selling / frequently recommended across the given results, not obscure ones mentioned only once.\n3. Return exactly ${cfg.product_count} products if that many distinct real products appear in the results; if fewer genuinely distinct products are mentioned, return as many as you can find (never pad with duplicates or invented items).\n4. Each product must be a specific, buyable model (brand + model name), not a generic category description.\n5. Products must be UNIQUE - do not list the same base model twice (e.g. two colour variants of the same model count as ONE product; pick the more prominently mentioned one).\n6. Do NOT return any product whose name closely matches one of these ALREADY-QUEUED products (case-insensitive, ignore punctuation): ${JSON.stringify(existingNames)}\n7. For each product, pick a source_url that is EXACTLY one of the URLs given to you below (copy it verbatim) - never invent or modify a URL. Prefer a URL whose page is actually about that specific product.\n8. Include your best guess at the brand name for each product, extracted from the text given.\n9. Output JSON only, matching the schema.`;\n\nconst user_prompt = `CATEGORY: ${cfg.category}\n\nSEARCH RESULTS:\n${JSON.stringify(cfg.candidate_pages)}\n\nCompile the shortlist of the most POPULAR distinct real products now.`;\n\nconst discovery_schema = {\n  type: \"object\",\n  properties: {\n    products: {\n      type: \"array\",\n      items: {\n        type: \"object\",\n        properties: {\n          product_name: { type: \"string\" },\n          brand: { type: \"string\" },\n          source_url: { type: \"string\" }\n        },\n        required: [\"product_name\", \"brand\", \"source_url\"]\n      }\n    }\n  },\n  required: [\"products\"]\n};\n\nreturn [{\n  json: {\n    ...cfg,\n    discovery_system_prompt: system_prompt + `\\n\\nReturn ONLY a JSON object matching exactly this schema - no markdown fences, no extra commentary:\\n${JSON.stringify(discovery_schema)}`,\n    discovery_user_prompt: user_prompt,\n    discovery_schema\n  }\n}];"
+      }
+    },
+    {
+      "id": "discover-products-http-3a",
+      "name": "Ollama Discover Products",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.ollama_base_url }}/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.research_model, messages: [ { role: \"system\", content: $json.discovery_system_prompt }, { role: \"user\", content: $json.discovery_user_prompt } ], response_format: { type: \"json_object\" }, stream: false }) }}",
+        "options": {
+          "timeout": 900000
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.DEEP_SEEK_API_KEY }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "parse-discovery-3a",
+      "name": "Parse Discovery JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const res = $input.item.json;\nconst raw = (res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content) || (res.message && res.message.content) || res.response || '';\n\nlet parsed = null, parseError = null;\ntry { parsed = JSON.parse(raw); } catch (e) { parseError = e.message; }\n\nconst cfg = $('Config').item.json;\nconst candidateUrls = new Set(($('Search Category Candidates').item.json.candidate_pages || []).map(p => p.url));\nconst existingNames = new Set($('Get Existing Product Keys').all().map(i => i.json.normalized_name).filter(Boolean));\n\nfunction normalize(s) {\n  return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();\n}\nfunction slugify(s) {\n  return (s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');\n}\n\nlet products = (parsed && Array.isArray(parsed.products)) ? parsed.products : [];\n\nconst seenNames = new Set();\nconst deduped = [];\nfor (const p of products) {\n  if (!p.product_name) continue;\n  const norm = normalize(`${p.brand || ''} ${p.product_name}`);\n  if (seenNames.has(norm)) continue;\n  if (existingNames.has(norm)) continue; // already queued on a previous run\n  // Only trust source URLs that were actually in the real search results - never a model-invented URL.\n  if (!p.source_url || !candidateUrls.has(p.source_url)) continue;\n  seenNames.add(norm);\n  deduped.push({\n    product_name: p.product_name,\n    brand: p.brand || '',\n    category: cfg.category,\n    source_url: p.source_url\n  });\n  if (deduped.length >= cfg.product_count) break;\n}\n\nif (deduped.length === 0) {\n  return [{ json: { _hasProducts: false, _discoveryError: `No usable NEW products extracted (parseError=${parseError || 'none'})`, product_name: null } }];\n}\n\n// Assign country_code / review_style by rotation so the queue spreads across\n// markets and formats instead of every product landing on the same combo.\nreturn deduped.map((p, idx) => {\n  const country_code = cfg.countries[idx % cfg.countries.length];\n  const review_style = cfg.review_styles[idx % cfg.review_styles.length];\n  const product_key = slugify(`${p.brand}-${p.product_name}-${country_code}`);\n  return {\n    json: {\n      ...p,\n      _hasProducts: true,\n      country_code,\n      review_style,\n      product_key,\n      discovery_meta: {\n        discovered_via: 'stage3a-discover-and-queue',\n        source_url: p.source_url\n      }\n    }\n  };\n});"
+      }
+    },
+    {
+      "id": "if-products-found-3a",
+      "name": "IF Products Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        80
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "pf1",
+              "leftValue": "={{ $json._hasProducts }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "source-manufacturer-images-3a",
+      "name": "Source Manufacturer Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        20
+      ],
+      "parameters": {
+        "jsCode": "const item = $input.item.json;\nconst sourceUrl = item.source_url;\n\n// Discovery's source_url is only guaranteed to be a REAL search result for this\n// product - not necessarily the brand's own site (confirmed live: a real run's\n// source_url for \"Sony WH-1000XM6\" was rtings.com's \"best noise-cancelling\n// headphones\" roundup page, whose og:image is that roundup's own listicle\n// graphic, not a Sony product photo). Scraping still runs against whatever page\n// discovery found, but the result is only trusted/kept as a manufacturer photo\n// when the page's own hostname plausibly belongs to the brand - an unrelated\n// site's thumbnail mislabeled as \"manufacturer\" would be worse than no photo at\n// all (Stage 3b's Openverse fallback handles that case instead).\nfunction hostnameOf(url) {\n  try { const m = String(url).match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/(?:[^@/]+@)?([^/:?#]+)/); return m ? m[1].toLowerCase().replace(/^www\\./, '') : ''; } catch (e) { return ''; }\n}\nfunction looksLikeBrandDomain(url, brand) {\n  if (!brand) return false;\n  const host = hostnameOf(url).replace(/[^a-z0-9]/g, '');\n  const normalizedBrand = String(brand).toLowerCase().replace(/[^a-z0-9]/g, '');\n  return !!normalizedBrand && host.includes(normalizedBrand);\n}\n\n// n8n's Code node sandbox has no global URL constructor (confirmed the hard way\n// elsewhere in this pipeline - see hostnameOf() in Validate Research Trust), so\n// relative image URLs are resolved by hand instead of new URL(url, base).\nfunction resolveUrl(url, base) {\n  if (!url) return null;\n  url = String(url).trim();\n  if (/^https?:\\/\\//i.test(url)) return url;\n  const schemeMatch = String(base).match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)/);\n  const scheme = schemeMatch ? schemeMatch[1] : 'https:';\n  if (/^\\/\\//.test(url)) return scheme + url;\n  const originMatch = String(base).match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/[^/]+/);\n  const origin = originMatch ? originMatch[0] : '';\n  if (url.startsWith('/')) return origin + url;\n  const basePath = String(base).replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/[^/]+/, '').replace(/[^/]*$/, '');\n  return origin + basePath + url;\n}\n\nlet productImages = [];\n\n// Finds the manufacturer's own product photos by scraping the real source_url\n// page that discovery already verified against actual search results - og:image /\n// twitter:image / JSON-LD Product.image are the same tags manufacturer sites set\n// for their own link-preview cards, so this is a deterministic, no-extra-API-key\n// way to get precise product photography instead of Openverse's generic stock\n// search (kept as Stage 3b's fallback when this finds nothing).\n//\n// Not fatal on failure - an unreachable/blocking page just leaves product_images\n// empty and Stage 3b falls back to Openverse, same as today.\ntry {\n  if (sourceUrl && looksLikeBrandDomain(sourceUrl, item.brand)) {\n    const html = await this.helpers.httpRequest({\n      method: 'GET',\n      url: sourceUrl,\n      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },\n      timeout: 20000\n    });\n    const htmlStr = String(html);\n    const seen = new Set();\n\n    function addImage(url, tag) {\n      const resolved = resolveUrl(url, sourceUrl);\n      if (!resolved || !/^https?:\\/\\//i.test(resolved) || seen.has(resolved)) return;\n      // A manufacturer's own og:image/twitter:image is often a generic sitewide\n      // social-share fallback (brand wordmark/icon), not a photo of the specific\n      // product being reviewed - confirmed live: samsung.com's product page's\n      // twitter:image was literally \"logo-square-letter.png\", the plain Samsung\n      // logo, which then outranked several genuinely good product photos from\n      // editorial sources since manufacturer_scrape is checked first. Filename\n      // pattern is a blunt but effective filter for this specific failure mode.\n      if (/logo|favicon|icon[-_.]|sprite|brand-?mark|placeholder|og-?default|default-?share/i.test(resolved)) return;\n      seen.add(resolved);\n      productImages.push({ url: resolved, source: 'manufacturer_scrape', tag, is_primary: productImages.length === 0 });\n    }\n\n    const metaTags = htmlStr.match(/<meta\\b[^>]*>/gi) || [];\n    for (const tag of metaTags) {\n      const propMatch = tag.match(/(?:property|name)\\s*=\\s*[\"']([^\"']+)[\"']/i);\n      const contentMatch = tag.match(/content\\s*=\\s*[\"']([^\"']+)[\"']/i);\n      if (!propMatch || !contentMatch) continue;\n      const prop = propMatch[1].toLowerCase();\n      if (['og:image', 'og:image:secure_url', 'og:image:url', 'twitter:image', 'twitter:image:src'].includes(prop)) {\n        addImage(contentMatch[1], prop);\n      }\n    }\n\n    const ldBlocks = htmlStr.match(/<script[^>]+type=[\"']application\\/ld\\+json[\"'][^>]*>([\\s\\S]*?)<\\/script>/gi) || [];\n    for (const block of ldBlocks) {\n      const inner = block.replace(/^<script[^>]*>/i, '').replace(/<\\/script>$/i, '');\n      try {\n        const data = JSON.parse(inner.trim());\n        const nodes = Array.isArray(data) ? data : (data['@graph'] || [data]);\n        for (const node of nodes) {\n          if (!node || typeof node !== 'object') continue;\n          const type = String(node['@type'] || '').toLowerCase();\n          if (type.includes('product') && node.image) {\n            const imgs = Array.isArray(node.image) ? node.image : [node.image];\n            for (const img of imgs) addImage(typeof img === 'string' ? img : (img && img.url), 'jsonld:product');\n          }\n        }\n      } catch (e) { /* not parseable JSON-LD, skip this block */ }\n    }\n\n    productImages = productImages.slice(0, 5);\n  }\n} catch (e) {\n  productImages = [];\n}\n\nreturn [{ json: { ...item, product_images: productImages } }];"
+      }
+    },
+    {
+      "id": "insert-queue-3a",
+      "name": "Insert Into Queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        640,
+        20
+      ],
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "INSERT INTO rgh.product_queue (product_name, brand, category, country_code, review_style, product_key, source_url, discovery_meta, product_images)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\nON CONFLICT (product_key) DO NOTHING\nRETURNING id, product_key;",
+        "options": {
+          "queryReplacement": "={{ $json.product_name }},{{ $json.brand }},{{ $json.category }},{{ $json.country_code }},{{ $json.review_style }},{{ $json.product_key }},{{ $json.source_url }},{{ JSON.stringify($json.discovery_meta) }},{{ JSON.stringify($json.product_images || []) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "rgh-content-db",
+          "name": "RGH Content DB"
+        }
+      }
+    },
+    {
+      "id": "discovery-summary-3a",
+      "name": "Discovery Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const parsed = $('Parse Discovery JSON').all();\nconst hasError = parsed.length === 1 && parsed[0].json._discoveryError;\nconst attempted = hasError ? 0 : parsed.length;\n\nlet inserted = 0;\ntry { inserted = $('Insert Into Queue').all().filter(i => i.json && i.json.id).length; } catch (e) { inserted = 0; }\n\nreturn [{\n  json: {\n    category: $('Config').first().json.category,\n    attempted,\n    inserted,\n    skipped_as_duplicate: attempted - inserted,\n    discovery_error: hasError ? parsed[0].json._discoveryError : null,\n    ran_at: new Date().toISOString()\n  }\n}];"
+      }
+    }
+  ],
+  "connections": {
+    "Daily Schedule": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Get Existing Product Keys",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Existing Product Keys": {
+      "main": [
+        [
+          {
+            "node": "Search Category Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Category Candidates": {
+      "main": [
+        [
+          {
+            "node": "Prepare Discovery Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Discovery Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama Discover Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Discover Products": {
+      "main": [
+        [
+          {
+            "node": "Parse Discovery JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Discovery JSON": {
+      "main": [
+        [
+          {
+            "node": "IF Products Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Products Found?": {
+      "main": [
+        [
+          {
+            "node": "Source Manufacturer Images",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Discovery Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Source Manufacturer Images": {
+      "main": [
+        [
+          {
+            "node": "Insert Into Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Into Queue": {
+      "main": [
+        [
+          {
+            "node": "Discovery Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

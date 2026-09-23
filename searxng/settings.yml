@@ -1,0 +1,13 @@
+use_default_settings: true
+
+general:
+  instance_name: "local-research-searxng"
+
+server:
+  secret_key: "affiliate-local-searxng-dev-secret-change-me"
+  limiter: false
+
+search:
+  formats:
+    - html
+    - json

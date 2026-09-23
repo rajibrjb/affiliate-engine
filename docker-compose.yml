@@ -1,0 +1,138 @@
+version: "3.8"
+
+services:
+  # ---------- WordPress ----------
+  wordpress:
+    image: wordpress:latest
+    restart: unless-stopped
+    depends_on:
+      - wordpress-db
+    ports:
+      - "8080:80"
+    environment:
+      WORDPRESS_DB_HOST: wordpress-db
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+    volumes:
+      - wordpress_data:/var/www/html
+      - ./wordpress/php-uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+    networks:
+      - app-network
+
+  wordpress-db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${WORDPRESS_DB_NAME}
+      MYSQL_USER: ${WORDPRESS_DB_USER}
+      MYSQL_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${WORDPRESS_DB_ROOT_PASSWORD}
+    volumes:
+      - wordpress_db_data:/var/lib/mysql
+    networks:
+      - app-network
+
+  # ---------- n8n ----------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    depends_on:
+      - n8n-db
+    ports:
+      - "5678:5678"
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n-db
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_DB_NAME}
+      DB_POSTGRESDB_USER: ${N8N_DB_USER}
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      # OpenRouter API key - used by the agentic product-photo search workflow's
+      # tool-calling loop (workflows/agentic-product-photo-search.json)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      # DeepSeek API key, read via $env in the writer/QA/research/SEO HTTP call nodes
+      DEEP_SEEK_API_KEY: ${DEEP_SEEK_API_KEY}
+      # Gemini API key (Nano Banana / gemini-2.5-flash-image) - used by "Generate Hero Banner"
+      # in stage3b-process-queue.json to create a decorative, non-photorealistic hero banner
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      # n8n blocks $env access in node expressions by default; the DeepSeek/Gemini auth above needs it
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # Amazon PA-API 5.0 credentials - not wired into any node yet (Associates
+      # account not activated), kept here ready for when "Source Product Photo"
+      # switches over from Openverse
+      PAAPI_ACCESS_KEY: ${PAAPI_ACCESS_KEY}
+      PAAPI_SECRET_KEY: ${PAAPI_SECRET_KEY}
+      PAAPI_PARTNER_TAG: ${PAAPI_PARTNER_TAG}
+      # Needed for the PA-API signing code (AWS SigV4 via Node's crypto module)
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - app-network
+
+  n8n-db:
+    image: postgres:16
+    restart: unless-stopped
+    ports:
+      - "5439:5432"
+    environment:
+      POSTGRES_DB: ${N8N_DB_NAME}
+      POSTGRES_USER: ${N8N_DB_USER}
+      POSTGRES_PASSWORD: ${N8N_DB_PASSWORD}
+    volumes:
+      - n8n_db_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+  # ---------- SearXNG (keyless self-hosted web search for the n8n research agent) ----------
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml
+    networks:
+      - app-network
+
+  # ---------- Review App (human approval gate between n8n and WordPress) ----------
+  review-app:
+    build: ./review-app
+    restart: unless-stopped
+    depends_on:
+      - n8n-db
+    ports:
+      - "4400:4400"
+    environment:
+      DB_HOST: n8n-db
+      DB_PORT: 5432
+      DB_NAME: ${N8N_DB_NAME}
+      DB_USER: ${N8N_DB_USER}
+      DB_PASSWORD: ${N8N_DB_PASSWORD}
+      REVIEW_APP_PASSWORD: ${REVIEW_APP_PASSWORD}
+      LOCAL_WP_URL: http://wordpress/wp-json/rgh/v1/publish-review
+      # Must match the RGH_INGEST_API_KEY define()'d in wordpress/rgh-secrets.php
+      # (not committed to git - see .gitignore) - the two are separate files
+      # kept in sync by hand; if you rotate one, rotate the other too.
+      LOCAL_WP_API_KEY: ${LOCAL_WP_API_KEY}
+      PROD_WP_URL: https://reviewgeekhub.com/wp-json/rgh/v1/publish-review
+      # Left blank until the ingest mu-plugin is deployed to the live site -
+      # "Publish to Production" will error clearly rather than silently no-op
+      # until this is set.
+      PROD_WP_API_KEY: ${PROD_WP_API_KEY}
+    networks:
+      - app-network
+
+volumes:
+  wordpress_data:
+  wordpress_db_data:
+  n8n_data:
+  n8n_db_data:
+
+networks:
+  app-network:
+    driver: bridge

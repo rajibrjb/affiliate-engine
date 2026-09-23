@@ -1,0 +1,11 @@
+{
+  "enabledPlugins": {
+    "playwright@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(docker exec affiliate-wordpress-db-1 *)",
+      "Bash(docker compose:*)"
+    ]
+  }
+}

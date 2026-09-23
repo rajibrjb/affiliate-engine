@@ -1,0 +1,156 @@
+{
+  "id": "agenticproductphoto01",
+  "name": "Agentic Product Photo Search + Enhance (OpenRouter)",
+  "nodes": [
+    {
+      "id": "sticky-1",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1180,
+        -320
+      ],
+      "parameters": {
+        "width": 680,
+        "height": 360,
+        "content": "## Agentic photo sourcing + enhancement (OpenRouter)\n\n**Agent 1 - Agentic Image Search**: given search_images/search_web/fetch_page tools, decides what to search and open, then calls select_images with up to 3 DISTINCT real photos. Candidates are only accepted if their URL actually appeared in a tool result during the conversation (rejects hallucinated URLs), then each is live-verified with a real HTTP fetch before being trusted.\n\n**Agent 2 - Agentic Image Enhancer**: for each selected photo, asks a Gemini image model (via OpenRouter) to sharpen/color-correct/de-noise WITHOUT altering the product itself, then a second model judges the result (same product? better quality?) and retries with feedback if it fails - accepts nothing it has not judged first. Watermark removal is intentionally out of scope (the model correctly refuses it on copyrighted editorial photos - see chat).\n\nTested live 2026-09-23 against Sony WH-1000XM6 - see chat for the actual before/after image.\n\nRequires OPENROUTER_API_KEY in the n8n container environment (docker-compose.yml)."
+      }
+    },
+    {
+      "id": "manual-trigger-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1180,
+        80
+      ]
+    },
+    {
+      "id": "config-1",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -940,
+        80
+      ],
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    openrouter_model: 'openai/gpt-4o-mini',\n    searxng_base_url: 'http://searxng:8080',\n    max_tool_steps: 8,\n    enhance_model: 'google/gemini-2.5-flash-image',\n    judge_model: 'openai/gpt-4o-mini',\n    enhance_max_attempts: 2\n  }\n}];"
+      }
+    },
+    {
+      "id": "product-input-1",
+      "name": "Product Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -700,
+        80
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "brand",
+              "type": "string",
+              "value": "Dyson"
+            },
+            {
+              "id": "a2",
+              "name": "product_name",
+              "type": "string",
+              "value": "V8 Animal"
+            },
+            {
+              "id": "a3",
+              "name": "category",
+              "type": "string",
+              "value": "cordless stick vacuum cleaner"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "agentic-image-search-1",
+      "name": "Agentic Image Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst item = $input.item.json;\nconst product = { brand: item.brand, name: item.product_name, category: item.category };\n\nconst MODEL = cfg.openrouter_model;\nconst SEARXNG_URL = `${cfg.searxng_base_url}/search`;\nconst MAX_STEPS = cfg.max_tool_steps;\n\nfunction resolveUrl(url, base) {\n  if (!url) return null;\n  url = String(url).trim();\n  if (/^https?:\\/\\//i.test(url)) return url;\n  const schemeMatch = String(base).match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)/);\n  const scheme = schemeMatch ? schemeMatch[1] : 'https:';\n  if (/^\\/\\//.test(url)) return scheme + url;\n  const originMatch = String(base).match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/[^/]+/);\n  const origin = originMatch ? originMatch[0] : '';\n  if (url.startsWith('/')) return origin + url;\n  const basePath = String(base).replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/[^/]+/, '').replace(/[^/]*$/, '');\n  return origin + basePath + url;\n}\n\nasync function searchImages(query) {\n  const res = await this.helpers.httpRequest({\n    method: 'GET',\n    url: SEARXNG_URL,\n    qs: { q: query, format: 'json', categories: 'images' },\n    json: true\n  });\n  return ((res && res.results) || []).slice(0, 8).map(r => ({\n    page_url: r.url, image_url: r.img_src, title: r.title, source: r.engine\n  }));\n}\n\nasync function searchWeb(query) {\n  const res = await this.helpers.httpRequest({\n    method: 'GET',\n    url: SEARXNG_URL,\n    qs: { q: query, format: 'json', categories: 'general' },\n    json: true\n  });\n  return ((res && res.results) || []).slice(0, 8).map(r => ({ url: r.url, title: r.title, snippet: r.content }));\n}\n\nasync function fetchPage(pageUrl) {\n  let html;\n  try {\n    html = await this.helpers.httpRequest({\n      method: 'GET',\n      url: pageUrl,\n      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' }\n    });\n  } catch (e) {\n    return { page_url: pageUrl, error: e.message, images: [] };\n  }\n  const htmlStr = String(html);\n  const found = [];\n  const metaTags = htmlStr.match(/<meta\\b[^>]*>/gi) || [];\n  for (const tag of metaTags) {\n    const propMatch = tag.match(/(?:property|name)\\s*=\\s*[\"']([^\"']+)[\"']/i);\n    const contentMatch = tag.match(/content\\s*=\\s*[\"']([^\"']+)[\"']/i);\n    if (!propMatch || !contentMatch) continue;\n    const prop = propMatch[1].toLowerCase();\n    if (['og:image', 'og:image:secure_url', 'twitter:image', 'twitter:image:src'].includes(prop)) {\n      const resolved = resolveUrl(contentMatch[1], pageUrl);\n      if (resolved) found.push({ url: resolved, tag: prop });\n    }\n  }\n  const titleMatch = htmlStr.match(/<title[^>]*>([^<]+)<\\/title>/i);\n  return { page_url: pageUrl, title: titleMatch ? titleMatch[1].trim() : null, images: found.slice(0, 5) };\n}\n\nconst tools = [\n  { type: 'function', function: { name: 'search_images', description: 'Search the web for images matching a query. Returns candidate image URLs with the page they came from.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },\n  { type: 'function', function: { name: 'search_web', description: 'General web search (not image-specific). Use to find the manufacturer/retailer product page.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },\n  { type: 'function', function: { name: 'fetch_page', description: 'Fetch a page and extract its title plus og:image/twitter:image meta tags. Use to verify a product page and pull its real photo.', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } } },\n  { type: 'function', function: { name: 'select_images', description: 'Final answer: up to 3 distinct real photos of this exact product (different angles or listings), ranked best first.', parameters: { type: 'object', properties: { images: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'object', properties: { image_url: { type: 'string' }, source_page_url: { type: 'string' }, credit: { type: 'string', description: 'e.g. \"Sony (manufacturer)\" or \"Best Buy product listing\"' }, reason: { type: 'string', description: 'Why this photo is confirmed to be the real product, not a lookalike or unrelated result.' } }, required: ['image_url', 'reason'] } } }, required: ['images'] } } }\n];\n\nasync function runTool(name, args) {\n  if (name === 'search_images') return searchImages.call(this, args.query);\n  if (name === 'search_web') return searchWeb.call(this, args.query);\n  if (name === 'fetch_page') return fetchPage.call(this, args.url);\n  throw new Error('unknown tool ' + name);\n}\n\nasync function verifyImageUrl(url) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url,\n      headers: { Range: 'bytes=0-2048' },\n      returnFullResponse: true,\n      encoding: 'arraybuffer'\n    });\n    const ct = (res.headers['content-type'] || res.headers['Content-Type'] || '').toString();\n    return res.statusCode < 400 && ct.startsWith('image/');\n  } catch (e) { return false; }\n}\n\nasync function callOpenRouter(messages, forceSelect) {\n  const body = {\n    model: MODEL,\n    messages,\n    tools,\n    tool_choice: forceSelect ? { type: 'function', function: { name: 'select_images' } } : 'auto'\n  };\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://openrouter.ai/api/v1/chat/completions',\n    headers: { Authorization: `Bearer ${$env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },\n    body,\n    json: true\n  });\n  return res.choices[0].message;\n}\n\nconst messages = [\n  {\n    role: 'system',\n    content: `You are a product-photo research agent for an affiliate review website. Given a product (brand, name, category), find up to 3 DISTINCT real, accurate photos of that exact product (different angles, colorways, or listings - not the same image twice) using the tools available (search_images, search_web, fetch_page). Prefer official manufacturer or major retailer photos over random stock/wiki images. It is fine to return fewer than 3 if you cannot confirm more.\n\nBe careful of false matches: a brand name can collide with unrelated things (e.g. \"Sony\" also makes cameras, \"Anker\" is also a historical person's surname) - verify each image/page is actually about THIS product before selecting it. Avoid logos, placeholder icons, and unrelated lifestyle photos.\n\nCRITICAL: you may ONLY select an image_url that was literally returned to you in a search_images or fetch_page tool result during this conversation. Never invent or recall a URL from memory - if you haven't seen it in a tool result this session, it doesn't count as found.\n\nYou have a limited number of tool calls. Use search_images and/or search_web to gather multiple candidates, then fetch_page on the most promising ones to confirm before calling select_images with your final ranked list.`\n  },\n  { role: 'user', content: `Find up to 3 real product photos for: ${product.brand} ${product.name} (category: ${product.category}).` }\n];\n\nconst toolTrace = [];\nconst groundedUrls = new Set();\nfunction ground(urls) { for (const u of urls) if (u) groundedUrls.add(u); }\nlet finalImages = null;\n\nfor (let step = 0; step < MAX_STEPS && !finalImages; step++) {\n  const forceSelect = step === MAX_STEPS - 1;\n  const msg = await callOpenRouter.call(this, messages, forceSelect);\n  messages.push(msg);\n\n  if (!msg.tool_calls || msg.tool_calls.length === 0) {\n    toolTrace.push({ step, type: 'assistant_text', content: msg.content });\n    continue;\n  }\n\n  for (const tc of msg.tool_calls) {\n    const args = JSON.parse(tc.function.arguments || '{}');\n    if (tc.function.name === 'select_images') {\n      const candidates = (args.images || []).filter(i => i && i.image_url).slice(0, 3);\n      const grounded = candidates.filter(c => groundedUrls.has(c.image_url));\n      const ungrounded = candidates.filter(c => !groundedUrls.has(c.image_url));\n      if (!grounded.length) {\n        // Nothing survived grounding - push back and let the agent search again rather\n        // than silently accepting a URL it never actually saw in a tool result.\n        toolTrace.push({ step, tool: 'select_images', args, rejected: 'ungrounded', ungrounded });\n        messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ error: 'None of those image_urls appeared in a prior tool result. Search again and only select URLs you actually saw in a tool result.' }) });\n        break;\n      }\n      const verified = [];\n      for (const c of grounded) {\n        const ok = await verifyImageUrl.call(this, c.image_url);\n        if (ok) verified.push(c);\n      }\n      finalImages = verified;\n      toolTrace.push({ step, tool: 'select_images', args, grounded: grounded.length, ungrounded: ungrounded.length, live_verified: verified.length });\n      break;\n    }\n    let result;\n    try { result = await runTool.call(this, tc.function.name, args); }\n    catch (e) { result = { error: e.message }; }\n    if (Array.isArray(result)) ground(result.map(r => r.image_url).filter(Boolean));\n    else if (result && result.images) ground(result.images.map(im => im.url).filter(Boolean));\n    toolTrace.push({ step, tool: tc.function.name, args, result });\n    messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) });\n  }\n}\n\nconst photos = finalImages || [];\nconst primary = photos[0] || null;\n\nreturn [{\n  json: {\n    ...item,\n    image_url: primary ? primary.image_url : null,\n    image_credit: primary ? primary.credit : null,\n    source_page_url: primary ? primary.source_page_url : null,\n    selection_reason: primary ? primary.reason : null,\n    image_source: primary ? 'agentic_openrouter' : 'none',\n    gallery_image_urls: photos.slice(1).map(p => ({ url: p.image_url, credit: p.credit })),\n    photos,\n    tool_trace: toolTrace\n  }\n}];\n"
+      }
+    },
+    {
+      "id": "agentic-image-enhance-1",
+      "name": "Agentic Image Enhancer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "disabled": true,
+      "position": [
+        -180,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst item = $input.item.json;\n\nconst EDIT_MODEL = cfg.enhance_model;\nconst JUDGE_MODEL = cfg.judge_model;\nconst MAX_ATTEMPTS = cfg.enhance_max_attempts;\n\nasync function toDataUrl(url) {\n  const res = await this.helpers.httpRequest({\n    method: 'GET',\n    url,\n    returnFullResponse: true,\n    encoding: 'arraybuffer'\n  });\n  const mime = (res.headers['content-type'] || res.headers['Content-Type'] || 'image/jpeg').toString();\n  const buf = Buffer.isBuffer(res.body) ? res.body : Buffer.from(res.body);\n  return `data:${mime};base64,${buf.toString('base64')}`;\n}\n\nasync function editImage(dataUrl, product, feedback) {\n  const prompt = `Enhance this product photo for a review website: increase sharpness/clarity, correct exposure and color balance, reduce compression artifacts and noise. Keep the actual product (${product}), its shape, colors, and any text/branding on the product itself completely unchanged - only improve overall image quality. Do not add, remove, or alter any object in the scene.${feedback ? ' Previous attempt feedback: ' + feedback : ''}`;\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://openrouter.ai/api/v1/chat/completions',\n    headers: { Authorization: `Bearer ${$env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },\n    body: {\n      model: EDIT_MODEL,\n      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: dataUrl } }] }]\n    },\n    json: true\n  });\n  const msg = res.choices[0].message;\n  return (msg.images && msg.images.length) ? msg.images[0].image_url.url : null;\n}\n\nasync function judgeImage(originalDataUrl, editedDataUrl, product) {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://openrouter.ai/api/v1/chat/completions',\n    headers: { Authorization: `Bearer ${$env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },\n    body: {\n      model: JUDGE_MODEL,\n      messages: [{\n        role: 'user',\n        content: [\n          { type: 'text', text: `Image A is the original product photo of \"${product}\". Image B is an \"enhanced\" version. Judge whether B: (1) still clearly shows the same real product unchanged (no distortion, no missing/added parts, no melted logos/text), and (2) is equal or better quality than A (sharper/cleaner, not worse). Respond with strict JSON only: {\"same_product\": bool, \"quality_ok\": bool, \"issue\": \"short string or null\"}` },\n          { type: 'text', text: 'Image A:' },\n          { type: 'image_url', image_url: { url: originalDataUrl } },\n          { type: 'text', text: 'Image B:' },\n          { type: 'image_url', image_url: { url: editedDataUrl } }\n        ]\n      }]\n    },\n    json: true\n  });\n  const content = res.choices[0].message.content || '';\n  const match = content.match(/\\{[\\s\\S]*\\}/);\n  return match ? JSON.parse(match[0]) : { same_product: false, quality_ok: false, issue: 'unparseable judge response' };\n}\n\nasync function enhanceOne(photo, productLabel) {\n  const originalDataUrl = await toDataUrl.call(this, photo.image_url);\n  let feedback = null;\n  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {\n    let editedDataUrl;\n    try { editedDataUrl = await editImage.call(this, originalDataUrl, productLabel, feedback); }\n    catch (e) { return { ...photo, enhanced: false, enhanced_reason: 'edit_error: ' + e.message }; }\n    if (!editedDataUrl) { feedback = 'no image returned, please return an edited image'; continue; }\n\n    let verdict;\n    try { verdict = await judgeImage.call(this, originalDataUrl, editedDataUrl, productLabel); }\n    catch (e) { return { ...photo, enhanced: false, enhanced_reason: 'judge_error: ' + e.message }; }\n\n    if (verdict.same_product && verdict.quality_ok) {\n      return { ...photo, enhanced: true, enhanced_image_base64: editedDataUrl, enhance_attempts: attempt };\n    }\n    feedback = verdict.issue || 'quality or fidelity check failed';\n  }\n  return { ...photo, enhanced: false, enhanced_reason: feedback || 'exhausted attempts' };\n}\n\nconst productLabel = `${item.brand || ''} ${item.product_name || ''}`.trim();\nconst photos = (item.photos || []).slice(0, 3);\n\nconst enhancedPhotos = [];\nfor (const photo of photos) {\n  const result = await enhanceOne.call(this, photo, productLabel);\n  enhancedPhotos.push(result);\n}\n\nreturn [{\n  json: {\n    ...item,\n    enhanced_photos: enhancedPhotos\n  }\n}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Product Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Product Input": {
+      "main": [
+        [
+          {
+            "node": "Agentic Image Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agentic Image Search": {
+      "main": [
+        [
+          {
+            "node": "Agentic Image Enhancer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

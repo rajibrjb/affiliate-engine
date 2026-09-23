@@ -1,0 +1,5 @@
+.env
+.DS_Store
+.playwright-mcp/
+affiliate_hero_photo/
+wordpress/rgh-secrets.php
