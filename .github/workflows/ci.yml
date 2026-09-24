@@ -66,10 +66,6 @@ jobs:
           echo "${{ secrets.HOSTINGER_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -p "${{ secrets.HOSTINGER_SSH_PORT }}" "${{ secrets.HOSTINGER_SSH_HOST }}" >> ~/.ssh/known_hosts
-      - name: DEBUG probe remote path
-        run: |
-          ssh -i ~/.ssh/deploy_key -p "${{ secrets.HOSTINGER_SSH_PORT }}" "${{ secrets.HOSTINGER_SSH_USER }}@${{ secrets.HOSTINGER_SSH_HOST }}" \
-            "echo HOME=\$HOME; pwd; echo '--- ~ ---'; ls -la ~; echo '--- ~/domains ---'; ls -la ~/domains 2>/dev/null; echo '--- ~/public_html ---'; ls -ld ~/public_html 2>/dev/null; ls ~/public_html 2>/dev/null"
       - name: Deploy mu-plugins
         run: |
           rsync -avz --delete -e "ssh -i ~/.ssh/deploy_key -p ${{ secrets.HOSTINGER_SSH_PORT }}" \

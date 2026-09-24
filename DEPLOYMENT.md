@@ -95,7 +95,11 @@ Required GitHub Actions repo secrets (Settings → Secrets and variables → Act
 - `HOSTINGER_SSH_KEY` — private half of a dedicated deploy keypair (not a personal key);
   the matching public key must be added to the same hPanel SSH Access page
 - `HOSTINGER_DEPLOY_PATH` — absolute path to the site root, e.g.
-  `/home/u123456789/domains/reviewgeekhub.com/public_html`
+  `/home/u123456789/domains/reviewgeekhub.com/public_html`. **Do not assume
+  `~/public_html` is this site's docroot** — on a multi-site Hostinger account
+  `~/public_html` is a symlink to whichever domain was set up first (confirmed via
+  SSH: it pointed at an unrelated domain here). Always use the explicit
+  `~/domains/<domain>/public_html` path.
 
 Local Docker stack remains the dev/staging sandbox — it doesn't need to resemble
 prod's full file layout beyond the `wp-content` subtree that actually ships.
