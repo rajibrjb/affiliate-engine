@@ -39,6 +39,13 @@ add_action( 'template_redirect', function () {
 	if ( 0 === strpos( (string) $path, '/wp-json/rgh/' ) ) {
 		return;
 	}
+	// Let WordPress's own do_robots (also hooked to template_redirect) serve
+	// the Disallow-all robots.txt from section 2 below - otherwise this runs
+	// first and crawlers get the HTML interstitial instead of a parseable
+	// robots.txt, which is worse for keeping well-behaved bots away.
+	if ( '/robots.txt' === $path ) {
+		return;
+	}
 
 	header( 'X-Robots-Tag: noindex, nofollow, noarchive' );
 	status_header( 503 );
