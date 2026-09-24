@@ -122,12 +122,34 @@ prod's full file layout beyond the `wp-content` subtree that actually ships.
 
 ## Flag for later
 
-- `wordpress/mu-plugins/rgh-ingest-api.php` (n8n content ingest endpoint) currently only
-  makes sense against `localhost`. Once prod exists, this endpoint and its auth need to
-  point at the real domain before the n8n pipeline can publish to production.
 - CSS duplication between `rgh-site.css` and the homepage's local `<style>` block
   (noted in `wordpress/CLAUDE.md`) — not a deploy blocker, but worth cleaning up before
   it diverges further across environments.
+- **Hostinger's own server-level page cache does not auto-invalidate on a raw DB
+  import or WP-CLI changes** — after the one-time migration (§4), the live site kept
+  serving a stale pre-migration snapshot (default "Hello world" content, no menu)
+  despite the database being correct end-to-end. Not the `litespeed-cache` *plugin*
+  (its own page/object cache was a red herring here) — the fix was hPanel →
+  Websites → reviewgeekhub.com → Dashboard → **Cache → Clear cache**. Remember this
+  any time content is changed by something other than normal wp-admin/REST activity
+  (direct DB writes, WP-CLI, etc.) — a manual clear is needed.
+- `wordpress/mu-plugins/rgh-ingest-api.php` (n8n content ingest endpoint) needed its
+  own prod-specific `wp-content/rgh-secrets.php` (gitignored, deployed once via SFTP,
+  not through CI) before it would accept calls — done 2026-09-25. `.env`'s
+  `PROD_WP_API_KEY` now holds the matching key and `review-app` was restarted to
+  pick it up. Verified live: wrong key → `401`, correct key → `400` (payload
+  validation, i.e. auth passes).
+- **Coming Soon mode is active** (`wordpress/mu-plugins/rgh-coming-soon.php`, added
+  2026-09-25) — logged-out visitors get a Coming Soon interstitial (`503` +
+  `X-Robots-Tag: noindex`), `robots.txt` disallows everything. This is the answer to
+  Roadmap item 9's "decide on coming-soon plugin" — implemented as a small
+  first-party mu-plugin rather than configuring the installed `coming-soon`
+  (SeedProd) plugin, which `wp_die()`s the whole site if its own page isn't set up
+  first. **To turn off for real launch**: delete `rgh-coming-soon.php` (redeploy via
+  CI) — that alone does not fix AIOSEO's `searchAppearance.advanced.globalRobotsMeta`
+  (currently `noindex: false`, i.e. AIOSEO itself thinks the site is indexable and
+  will fight the core `blog_public` setting once this mu-plugin's override is gone),
+  so also flip that in AIOSEO's own settings before expecting real indexing.
 
 ---
 
