@@ -60,23 +60,39 @@ surface — see §5.
   (REHub, based on the `rgh_` prefixes throughout the code).
 - Confirm SSH access and WP-CLI work: `ssh` into the box, run `wp --info`.
 
-## 4. One-time content migration (DB + uploads)
+## 4. One-time content migration (DB + uploads) — done
 
-This happens **once**, since this is the first deploy:
+Executed 2026-09-25. Actual steps used (slightly different from the original plan,
+worth keeping for reference if this is ever needed again):
 
-1. Export the DB from the local `wordpress-db` container.
-2. Run `wp search-replace` on the dump: local URL (`localhost:8080`) → production domain.
-3. Transfer the DB dump and `wp-content/uploads/` to Hostinger via rsync/SFTP.
-4. Import the DB via WP-CLI on Hostinger, flush rewrite rules
-   (`wp rewrite flush --hard`).
-5. **Verify pretty URLs return 200 on the new host.** The local environment already hit
-   a bug where `permalink_structure` + rewrite flush reported success but `.htaccess`
-   silently kept an empty rewrite block (see `wordpress/CLAUDE.md`) — don't assume this
-   carries over cleanly; check it explicitly on Hostinger.
+1. `mysqldump` isn't present in the `wordpress:latest` image's PATH — `wp db export`
+   fails there. Ran `mysqldump` directly against the `wordpress-db` container instead:
+   `docker exec affiliate-wordpress-db-1 sh -c 'mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"'`.
+2. **Checked plugins first** (not in the original plan) — prod already had some plugins
+   at *newer* versions than local (`elementor`, `envato-market`) plus Hostinger's own
+   management plugins (`litespeed-cache`, `hostinger-ai-assistant`, etc.) that don't
+   exist locally at all. A blanket rsync of `wp-content/plugins/` would have downgraded
+   the former and could have clobbered the latter. Diffed `wp plugin list` on both sides
+   and only rsynced the plugins genuinely missing on prod (`akismet`,
+   `all-in-one-seo-pack`, `coming-soon`, `google-analytics-for-wordpress`, `hello`,
+   `woocommerce`, `wpforms-lite`) — `hello` is a single `hello.php` file, not a
+   directory, worth remembering.
+3. Synced `wp-content/uploads/` (~200 MB, 1292 files) via `docker cp` out of the
+   container + `rsync` to prod — took >5 min for the initial pass (many small files);
+   re-running the same `rsync` command resumed/completed cleanly since it skips
+   already-transferred files.
+4. `wp db import` + `wp search-replace 'http://localhost:8080' 'https://reviewgeekhub.com' --all-tables`
+   on prod (344 replacements). Re-ran `wp option update siteurl/home` explicitly as a
+   backstop — turned out to be a no-op, search-replace already covered it.
+5. `wp rewrite flush --hard` + inspected `.htaccess` — **the local empty-rewrite-block
+   bug did not carry over**; prod's LiteSpeed-managed `.htaccess` got real `RewriteRule`
+   lines on the first flush. Verified with `curl -I` on both the homepage and a
+   real post permalink → both `200`.
 
 After this step, **production's database is the source of truth**. Content changes
 happen directly against prod (wp-admin or WP-CLI over SSH), not by re-pushing the local
-DB.
+DB. This was a one-time migration, not something CI does — the `deploy` job in §5 still
+only ever touches `mu-plugins/` and the child theme.
 
 ## 5. Git-based CI/CD for code only — implemented
 
@@ -117,15 +133,16 @@ prod's full file layout beyond the `wp-content` subtree that actually ships.
 
 ## Open items requiring manual action (not automatable from this machine)
 
-- [ ] Add the generated deploy public key to Hostinger hPanel → Advanced → SSH Access
-- [ ] Set the 5 GitHub Actions repo secrets listed in §5
-- [ ] Install WordPress + ReHub theme + `rehub-blankchild` child theme on Hostinger, and
-      create empty `wp-content/mu-plugins/` and `wp-content/themes/rehub-blankchild/`
-      dirs if this is a fresh install (so the first CI deploy has somewhere to land)
-- [ ] Confirm WP-CLI availability over SSH
+- [x] Add the generated deploy public key to Hostinger hPanel → Advanced → SSH Access
+- [x] Set the 5 GitHub Actions repo secrets listed in §5
+- [x] Install WordPress + ReHub theme + `rehub-blankchild` child theme on Hostinger —
+      was already done on the account before this repo's CI/CD existed
+- [x] Confirm WP-CLI availability over SSH — WP-CLI 2.12.0, same version as local
+- [x] Run the one-time DB/uploads migration (§4) and plugin gap-fill
+- [x] Domain DNS already pointed at Hostinger and serving — confirmed via
+      `curl -I https://reviewgeekhub.com/` → `200`
+- [x] Re-verify the permalink/rewrite `.htaccess` issue (see `wordpress/CLAUDE.md`) —
+      did **not** carry over to prod; real `RewriteRule` lines generated on first flush
 - [ ] One-time upload of a prod-specific `wordpress/rgh-secrets.php` via SFTP —
-      different key than local, not pushed through CI (it's gitignored by design)
-- [ ] Run the one-time DB/uploads migration
-- [ ] Point domain DNS at Hostinger (if not already)
-- [ ] Re-verify the permalink/rewrite `.htaccess` issue (see `wordpress/CLAUDE.md`)
-      actually resolves cleanly on Hostinger — not assumed fixed by the local workaround
+      different key than local, not pushed through CI (it's gitignored by design) —
+      still open; `rgh-ingest-api.php` will 401 on every call until this exists on prod
